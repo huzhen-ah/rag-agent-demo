@@ -1,0 +1,10 @@
+{"question":"三周学习计划要跑通的完整主线是什么？","relevant_chunk_ids":[0,1]}
+{"question":"这份三周计划每天按多少小时设计，并要求每天留下哪些可验证资产？","relevant_chunk_ids":[1]}
+{"question":"第一周最终要产出哪四项成果？","relevant_chunk_ids":[4,5]}
+{"question":"Day 3需要对比哪些生成参数？","relevant_chunk_ids":[6]}
+{"question":"Day 5需要理解哪些设备、数值精度和推理模式概念？","relevant_chunk_ids":[8]}
+{"question":"第二周最终要形成哪些SFT和LoRA相关成果？","relevant_chunk_ids":[9]}
+{"question":"Day 10需要理解LoRA的哪些主要参数？","relevant_chunk_ids":[11]}
+{"question":"Day 15学习RAG需要完成哪些任务？","relevant_chunk_ids":[14]}
+{"question":"Day 19要求手写哪三个Agent工具？","relevant_chunk_ids":[17]}
+{"question":"三周计划完成后建议继续学习哪些内容？","relevant_chunk_ids":[24]}
