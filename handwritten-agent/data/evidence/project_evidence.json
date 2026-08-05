@@ -1,0 +1,115 @@
+[
+  {
+    "project": "handwritten-rag",
+    "keywords": [
+      "RAG",
+      "Dense",
+      "Embedding",
+      "BM25",
+      "RRF",
+      "Reranker",
+      "CrossEncoder",
+      "检索",
+      "混合检索",
+      "评测",
+      "MRR",
+      "Recall"
+    ],
+    "evidence": [
+      "使用Qwen3-Embedding-0.6B生成归一化Dense Embedding",
+      "使用NumPy计算Query与Chunk的余弦相似度并完成Top-K召回",
+      "使用Jieba分词并手写BM25，包括词频、文档频率、IDF、词频饱和和文档长度归一化",
+      "手写RRF，对Dense与BM25候选的并集进行排名融合",
+      "使用Qwen3-Reranker-0.6B对RRF候选进行CrossEncoder重排",
+      "使用MRR和Recall@K分别评测Dense、BM25、RRF和Reranker阶段",
+      "使用Qwen3-1.7B根据最终检索上下文生成回答"
+    ]
+  },
+  {
+    "project": "langchain-rag",
+    "keywords": [
+      "RAG",
+      "LangChain",
+      "LCEL",
+      "Milvus",
+      "向量数据库",
+      "Dense",
+      "Sparse",
+      "BM25",
+      "RRF",
+      "HNSW",
+      "Reranker",
+      "CrossEncoder",
+      "Docker",
+      "Attu"
+    ],
+    "evidence": [
+      "自行解析TXT、Markdown和PDF并构造LangChain Document",
+      "使用RecursiveCharacterTextSplitter完成文档切分和Chunk Overlap",
+      "显式创建Milvus Database、Collection Schema、BM25 Function和索引",
+      "使用HNSW和COSINE完成Dense向量检索",
+      "使用Milvus原生BM25 Function和Sparse Inverted Index完成关键词检索",
+      "使用RRF融合Dense与BM25排名结果",
+      "使用Hugging Face CrossEncoder和LangChain Reranker组件完成候选重排",
+      "使用LCEL串联Retriever、Reranker、Prompt、本地Qwen3-1.7B和输出解析",
+      "使用Docker运行Milvus Standalone，并通过Attu检查Schema、索引和数据"
+    ]
+  },
+  {
+    "project": "mini-llm-demo",
+    "keywords": [
+      "LLM",
+      "大模型",
+      "Transformer",
+      "Tokenizer",
+      "预训练",
+      "SFT",
+      "DPO",
+      "LoRA",
+      "RoPE",
+      "KVCache"
+    ],
+    "evidence": [
+      "完成mini-llm-demo项目，用于理解语言模型的底层组成和训练流程",
+      "项目仓库为huzhen-ah/mini-llm-demo",
+      "具体实现模块和实验结果需要根据项目仓库进一步补充，当前数据不作额外推断"
+    ]
+  },
+  {
+    "project": "customer-service-dialogue-system",
+    "keywords": [
+      "智能客服",
+      "客服",
+      "对话系统",
+      "意图",
+      "Neo4j",
+      "知识图谱",
+      "知识库",
+      "数据同步",
+      "实时更新",
+      "定时任务"
+    ],
+    "evidence": [
+      "参与过智能客服对话系统相关开发",
+      "理解对话系统中的用户意图、知识查询和对话流程问题",
+      "具有Neo4j知识数据定时更新或实时更新的相关经验",
+      "理解实时增量更新与定时全量对账结合的数据同步方式",
+      "公司、任职时间、业务规模和具体职责尚未补充，不作为匹配证据"
+    ]
+  },
+  {
+    "project": "graduation-thesis",
+    "keywords": [
+      "HMM",
+      "隐马尔可夫",
+      "隐马尔可夫模型",
+      "概率模型",
+      "序列模型",
+      "毕业论文"
+    ],
+    "evidence": [
+      "毕业论文方向与隐马尔可夫模型应用相关",
+      "具体研究问题、数据集、实验方法和结果尚未补充，不作额外推断"
+    ]
+  }
+]
