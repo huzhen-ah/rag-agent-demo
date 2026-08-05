@@ -9,15 +9,7 @@ from transformers.utils import get_json_schema
 import json
 from jsonschema import validate
 from jsonschema.exceptions import ValidationError
-
-class ToolInvocationException(Exception):
-    pass
-
-class ToolExecutionException(Exception):
-    pass
-
-class ResumeNotFoundException(ToolExecutionException):
-    pass
+from exceptions import ToolInvocationException,ResumeNotFoundException
 
 class Tool:
     def __init__(self,function):
