@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本是 **2026-08-05 核心流程快照**。它已经能够运行完整的 Model → Tool → Model 循环；Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
+当前版本是 **2026-08-06 核心流程快照**。它已经能够运行完整的 Model → Tool → Model 循环；Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
 
 ## 1. 当前实现范围
 
@@ -27,6 +27,8 @@ Model 决策
 - Tool 调用错误与可恢复执行错误的分类处理。
 - Typed State、Reducer 和 State Update。
 - 同一 Super-step 内多个 Node Update 的统一提交。
+- `CompiledStateGraph` 统一持有 Reducer 映射并负责合并外部输入与 Node Updates。
+- 使用加法 Reducer 累计模型调用次数，允许同一 Super-step 中多个模型 Node 分别提交调用增量。
 - `StateGraph` Builder 与 `CompiledStateGraph`。
 - Fixed Edge、Conditional Edge、Router 和 `path_map`。
 - `START`、`END`、循环执行和最大 Super-step 限制。
@@ -45,9 +47,11 @@ User Input
     ↓
 Agent.run(user_input, agent_state)
     ↓
-向 State 提交 UserMessage
+构造包含 UserMessage 的 input_update
     ↓
-CompiledStateGraph.invoke(state)
+CompiledStateGraph.invoke(state, input_update)
+    ↓
+通过 Reducer 将 input_update 合并到 State
     ↓
 START → ModelNode
              ↓
@@ -87,14 +91,14 @@ State → Partial State Update
 |---|---|
 | `state.py` | Message、ToolCall、AgentState、AgentStateUpdate 和 `add_messages` Reducer |
 | `runtime.py` | 提取 State Reducer，并按照 Super-step 规则合并多个 Node Update |
-| `graph.py` | StateGraph Builder、Graph 编译、Transition、Router 调度和执行循环 |
+| `graph.py` | StateGraph Builder、Graph 编译、Reducer 所有权、Transition、Router 调度和执行循环 |
 | `model.py` | Qwen3 Model Adapter、消息格式转换和 ToolCall ID 标准化 |
 | `parser.py` | 解析模型原始输出，提取 `content`、`name` 和 `arguments` |
 | `nodes.py` | ModelNode 和 ToolNode |
 | `routers.py` | 根据最新 State 决定进入 ToolNode 或结束 |
 | `tools.py` | Tool 抽象、Tool Schema、参数校验、业务 Tool 和异常协议 |
 | `tool_register.py` | Tool 注册、按名称查找以及 Tool Definition 导出 |
-| `agent.py` | 组装 Resume Agent，并管理单轮输入与外部会话 State |
+| `agent.py` | 组装 Resume Agent、构造单轮输入 Update，并接收调用方持有的会话 State |
 
 ## 4. Message 与 ToolCall 协议
 
@@ -137,9 +141,12 @@ Tool 执行后生成 ToolMessage：
 `AgentState` 是 Graph 在某一时刻的已提交状态：
 
 ```python
+from operator import add
+
+
 class AgentState(TypedDict, total=True):
     messages: Annotated[list[Message], add_messages]
-    model_steps: int
+    model_call_count: Annotated[int, add]
 ```
 
 字段更新分为两类：
@@ -152,6 +159,14 @@ class AgentState(TypedDict, total=True):
 - 新 ID 追加消息。
 - 已存在的 ID 替换对应消息。
 - 合并前复制旧消息，避免破坏上一版 State，为后续 Checkpoint 保留正确语义。
+
+`model_call_count` 使用标准库的 `operator.add`：
+
+- ModelNode 每完成一次模型调用，返回增量 `1`，而不是返回旧值加一后的总数。
+- Runtime 从 `Annotated` 中取得 `add`，并在提交 State Update 时主动调用它。
+- 同一 Super-step 中多个模型 Node 可以分别返回增量，最终统一累加到旧值上。
+
+Reducer 映射只由 `CompiledStateGraph` 持有。`Agent` 只构造 `input_update`，不解析 State Schema，也不直接调用底层 `apply_updates()`。
 
 ## 6. Graph 与 Transition
 

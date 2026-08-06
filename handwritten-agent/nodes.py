@@ -25,8 +25,8 @@ class ModelNode:
             "tool_calls":response["tool_calls"]
         }
         
-        messages = {"messages":[assistant_message],"model_steps":state["model_steps"]+1}
-        return messages
+        agentStateUpdate = {"messages":[assistant_message],"model_call_count":1}
+        return agentStateUpdate
     
 
 class ToolNode:

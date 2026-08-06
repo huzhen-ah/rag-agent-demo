@@ -6,19 +6,19 @@ Created on Wed Jul 29 19:48:47 2026
 @author: huzhen
 """
 
-from runtime import get_state_reducers,apply_updates
 import uuid
 from graph import StateGraph,START,END
 from state import AgentState
 from nodes import ModelNode,ToolNode
 from routers import router_after_model
+
+
 class Agent:
     def __init__(self, chat_model, register, system_prompt, max_steps=5):
         self.chat_model = chat_model
         self.register = register
         self.system_prompt = system_prompt
         self.max_steps = max_steps
-        self.key2reducer = get_state_reducers(AgentState)
         self.model_node = ModelNode(self.chat_model,self.register.get_tool_definitions())
         self.tool_node = ToolNode(self.register)
         self.compiled_graph = self.init_graph()
@@ -47,7 +47,7 @@ class Agent:
                          }
         agent_state = {
                             "messages":[system_message],
-                            "model_steps":0
+                            "model_call_count":0
                       }
         return agent_state
     
@@ -60,10 +60,9 @@ class Agent:
                             "role":"user",
                             "content":user_input
                        }
-        agent_state = apply_updates(agent_state, [{"messages":[user_message]}], self.key2reducer)
+        input_update = {"messages":[user_message]}
 
-
-        agent_state = self.compiled_graph.invoke(agent_state,recursion_limit=self.max_steps)
+        agent_state = self.compiled_graph.invoke(agent_state,input_update,recursion_limit=self.max_steps)
 
 
         return agent_state

@@ -81,7 +81,9 @@ class StateGraph:
         
         if not callable(router):
             raise TypeError("router必须是callable")
+
         self.conditional_edges[source] = {"router":router,"path_map":path_map}
+
         return self
     
     def get_reached_nodes_from_edges(self,source,reached_nodes):
@@ -106,10 +108,9 @@ class StateGraph:
         return reached_nodes
         
         
-    
     def compile(self):
         if START not in self.fixed_edges and START not in self.conditional_edges:
-            raise ValueError("START必须至少存在于fixed_edges和conditional_edges中的一个")
+            raise ValueError("START必须至少存在于fixed_edges和conditional_edges中的一个，其实只能存在于一个")
         overlapping_sources = set(self.fixed_edges).intersection(set(self.conditional_edges))
         if overlapping_sources:
             raise ValueError("node不能同时拥有固定边与条件边，以下node同时拥有固定边与条件边：{}".format(overlapping_sources))
@@ -120,8 +121,6 @@ class StateGraph:
         
         for source,targets in self.fixed_edges.items():
             transitions[source] = FixedTransition(targets.copy())
-            
-      
         
         for source,conditional_edge in self.conditional_edges.items():
             router = conditional_edge["router"]
@@ -145,7 +144,8 @@ class StateGraph:
         reached_nodes = self.get_reached_nodes_from_edges(START, reached_nodes)
         unreached_nodes = set(self.nodes) - reached_nodes
         if unreached_nodes:
-            raise ValueError("存在未到达的nodes:{}".format(unreached_nodes))
+            raise ValueError("从START开始，存在未到达的nodes:{}".format(unreached_nodes))
+
         return CompiledStateGraph(self.state_schema,nodes,transitions)
     
 class CompiledStateGraph:
@@ -155,9 +155,14 @@ class CompiledStateGraph:
         self.transitions = transitions
         self.key2reducer = get_state_reducers(state_schema)
         
-    def invoke(self,initial_state,recursion_limit=25):
-        state = initial_state
+    def merge_updates(self,old_state,update_states):
+        return apply_updates(old_state, update_states, self.key2reducer)
+
+    def invoke(self,initial_state,input_update=None,recursion_limit=25):
         
+        state = initial_state
+        if input_update is not None:
+            state = self.merge_updates(state, [input_update])
         start_transition = self.transitions[START]
         active_node_names = start_transition.resolve_targets(state)
         
@@ -177,7 +182,7 @@ class CompiledStateGraph:
                 node = self.nodes[node_name]
                 update_state = node(state)
                 update_states.append(update_state)
-            state = apply_updates(state, update_states, self.key2reducer)
+            state = self.merge_updates(state, update_states)
             
             active_node_names = set()
             for node_name in executable_node_names:
@@ -259,4 +264,3 @@ if __name__ == "__main__":
     compiledStateGraph = graph.compile()
     
     print(compiledStateGraph.nodes is graph.nodes)
-    

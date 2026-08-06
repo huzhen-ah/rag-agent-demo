@@ -1,11 +1,12 @@
 # RAG & Agent Demo
 
-这是一个用于学习和作品集展示的 RAG 与 Agent 项目。目前包含两套可以对照阅读的 RAG 实现：
+这是一个用于学习和作品集展示的 RAG 与 Agent 项目。目前包含两套可以对照阅读的 RAG 实现，以及一套原生 Python 手写的 Graph Agent Runtime：
 
 - `handwritten-rag`：不使用 RAG 编排框架，手写 BM25、RRF 和评测流程。
 - `langchain-rag`：使用 LangChain 与 Milvus Standalone 重构同一条 RAG 链路。
+- `handwritten-agent`：不使用 LangGraph，手写 State、Reducer、Node、Edge、Router、Compiled Graph 和 Tool-Calling 循环。
 
-后续将在本仓库继续实现手写 Agent 和 LangGraph Agent。
+手写 Agent 的基础运行闭环已经完成，后续将在同一 Runtime 上补充 Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent，再使用 LangGraph 重构相同业务流程。
 
 ## 署名
 
@@ -35,6 +36,15 @@ rag-agent-demo/
 │   ├── generator.py
 │   ├── rag.py
 │   └── demo.py
+├── handwritten-agent/
+│   ├── state.py
+│   ├── runtime.py
+│   ├── graph.py
+│   ├── nodes.py
+│   ├── model.py
+│   ├── parser.py
+│   ├── tools.py
+│   └── agent.py
 └── README.md
 ```
 
@@ -101,6 +111,34 @@ python demo.py
 
 详细说明见 [langchain-rag/README.md](langchain-rag/README.md)。
 
+## Handwritten Graph Agent
+
+手写 Agent 用于理解主流 Graph Agent Runtime 的核心运行语义：
+
+```text
+User Input
+→ State Update
+→ ModelNode
+→ Tool Calling
+→ ToolNode
+→ Reducer统一提交
+→ Conditional Routing
+→ 下一Super-step或END
+```
+
+当前已经实现：
+
+- Provider-agnostic 的 Message 与 ToolCall 内部协议。
+- Qwen3 Tool Calling 适配、解析和 ToolCall ID 标准化。
+- Tool Registry、JSON Schema 参数校验和分层异常处理。
+- Typed State、字段 Reducer 和 Partial State Update。
+- `StateGraph` Builder、`CompiledStateGraph`、固定边和条件边。
+- 多个 Node 读取同一份旧 State，并在 Super-step 末统一提交 Updates。
+- `model_call_count` 加法 Reducer，支持多个模型 Node 累计调用次数。
+- 外部会话 State，使一个 Agent 实例能够服务多个独立会话。
+
+详细说明见 [handwritten-agent/README.md](handwritten-agent/README.md)。
+
 ## 两个版本的对应关系
 
 | 环节 | 手写版 | LangChain + Milvus 版 |
@@ -130,7 +168,7 @@ Qwen3-1.7B
 这是以理解和跑通流程为目标的本地 Demo，目前没有：
 
 - API 服务和前端。
-- 并发与流式输出。
+- 生产级并发与流式输出。
 - 增量索引。
 - 权限控制。
 - 生产级配置和监控。
@@ -139,8 +177,8 @@ Qwen3-1.7B
 ## 后续计划
 
 ```text
-手写最小Agent
-→ LangGraph Agent
+补齐手写Agent高级核心能力
+→ LangGraph重构
 → FastAPI与演示页面
 → 测试、评测和项目说明完善
 ```

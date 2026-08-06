@@ -8,7 +8,7 @@ Created on Fri Jul 31 19:21:09 2026
 
 import copy
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
-
+from operator import add
 
 class ToolCall(TypedDict, total=True):
     id: str
@@ -65,12 +65,12 @@ def add_messages(old_messages, update_messages):
 
 class AgentState(TypedDict, total=True):
     messages: Annotated[list[Message], add_messages]
-    model_steps: int
+    model_call_count: Annotated[int, add]
 
 
 class AgentStateUpdate(TypedDict, total=False):
     messages: list[Message]
-    model_steps: int
+    model_call_count: int
     
     
 if __name__ == "__main__":
@@ -80,13 +80,13 @@ if __name__ == "__main__":
     
     key2reducer = {}
     for key,definition in keys_definitions.items():
-        origin_type = get_origin(definition)
-        if origin_type is Annotated:
-            key_type,reducer = get_args(definition)
-            key2reducer[key] = reducer
-        else:
-            key2reducer[key] = None
+        type_definition = get_origin(definition)
+        if type_definition is Annotated:
+            _,reducer = get_args(definition)
             
+        else:
+            reducer = None
+        key2reducer[key] = reducer
+
     print(key2reducer)
-    
     
