@@ -734,7 +734,7 @@ Trace中的完整上下文
 | `Agent.run()` | Graph Runtime |
 | `max_steps` | Step / Recursion Limit |
 | Trace Event | Graph / Node / Tool Event |
-| 后续可选 State Snapshot | Checkpointer |
+| `StateSnapshot` + `Checkpointer` | Checkpointer / State Snapshot |
 | 后续可选长期资料存储 | Store |
 
 手写版的目的，是让以下数据流完全可见：
@@ -766,13 +766,17 @@ State
 - Tool Node。
 - Conditional Routing。
 - Runtime Loop。
+- StateSnapshot、thread/checkpoint 标识和父子血缘。
+- InMemory 与 JSONL Checkpointer。
+- Super-step 后保存以及从 next nodes 恢复。
 - 错误反馈和停止条件。
 - Trace。
 - 完整岗位分析闭环。
 
 手写版暂不实现：
 
-- 数据库或磁盘 Checkpoint。
+- 数据库、远程 Checkpointer 和分布式一致性。
+- Pending writes 与异步持久化。
 - 跨会话长期 Memory Store。
 - Human-in-the-loop 中断恢复。
 - 分布式节点执行。
@@ -782,7 +786,7 @@ State
 - 多 Agent。
 - Web 服务和前端。
 
-这些能力属于后续 LangGraph 和工程化阶段，不影响当前手写版理解和呈现主流 Agent 核心架构。
+这些能力属于后续高级核心和工程化阶段，不影响当前手写版理解和呈现主流 Agent 核心架构。
 
 ## 17. 参考资料
 

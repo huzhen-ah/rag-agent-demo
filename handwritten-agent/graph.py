@@ -9,9 +9,13 @@ Created on Tue Aug  4 09:59:18 2026
 
 from runtime import get_state_reducers,apply_updates
 from collections.abc import Hashable
+from checkpoint import StateSnapshot,Checkpointer
+import time
+import uuid
 
 START = "__start__"
 END = "__end__"
+
 
 class StateGraph:
     def __init__(self,state_schema):
@@ -108,7 +112,7 @@ class StateGraph:
         return reached_nodes
         
         
-    def compile(self):
+    def compile(self, checkpointer: Checkpointer):
         if START not in self.fixed_edges and START not in self.conditional_edges:
             raise ValueError("START必须至少存在于fixed_edges和conditional_edges中的一个，其实只能存在于一个")
         overlapping_sources = set(self.fixed_edges).intersection(set(self.conditional_edges))
@@ -146,33 +150,49 @@ class StateGraph:
         if unreached_nodes:
             raise ValueError("从START开始，存在未到达的nodes:{}".format(unreached_nodes))
 
-        return CompiledStateGraph(self.state_schema,nodes,transitions)
+        return CompiledStateGraph(self.state_schema,nodes,transitions,checkpointer)
     
 class CompiledStateGraph:
-    def __init__(self,state_schema,nodes,transitions):
+    def __init__(self, state_schema, nodes, transitions, checkpointer=None):
         self.state_schema = state_schema
         self.nodes = nodes
         self.transitions = transitions
+        self.checkpointer = checkpointer
         self.key2reducer = get_state_reducers(state_schema)
         
+    def get_created_at(self):
+        return str(time.time())
+
     def merge_updates(self,old_state,update_states):
         return apply_updates(old_state, update_states, self.key2reducer)
 
-    def invoke(self,initial_state,input_update=None,recursion_limit=25):
+    def invoke(self, initial_state, input_update=None, thread_id=None, checkpoint_id=None, recursion_limit=25):
+        if thread_id is None:
+            raise ValueError("必须传入thread_id")
         
-        state = initial_state
-        if input_update is not None:
-            state = self.merge_updates(state, [input_update])
-        start_transition = self.transitions[START]
-        active_node_names = start_transition.resolve_targets(state)
+        stateSnapshot = self.checkpointer.get(thread_id,checkpoint_id)
+        if stateSnapshot:
+            parent_checkpoint_id = stateSnapshot.checkpoint_id
+            state = stateSnapshot.state
+            if input_update is not None:
+                state = self.merge_updates(state, [input_update])
+                start_transition = self.transitions[START]
+                executable_node_names = start_transition.resolve_targets(state) - {END}
+            else:
+                executable_node_names = set(stateSnapshot.next_node_names)
+            super_step = stateSnapshot.super_step
+            recursion_limit += super_step
+        else:
+            parent_checkpoint_id = None
+            state = initial_state
+            if input_update is not None:
+                state = self.merge_updates(state, [input_update])
+            start_transition = self.transitions[START]
+            executable_node_names = start_transition.resolve_targets(state) - {END}
+            super_step = 0
+
         
-        
-        super_step = 0
-        while active_node_names:
-            executable_node_names = active_node_names - {END}
-            
-            if not executable_node_names:
-                return state
+        while executable_node_names:
             
             if super_step >= recursion_limit:
                 raise RuntimeError("Graph 超过最大super-step步数:{}".format(recursion_limit))
@@ -188,7 +208,22 @@ class CompiledStateGraph:
             for node_name in executable_node_names:
                 if node_name in self.transitions:
                     active_node_names.update(self.transitions[node_name].resolve_targets(state))
+            executable_node_names = active_node_names - {END}
             super_step += 1
+            if self.checkpointer and thread_id:
+                current_checkpoint_id = r"checkpoint_{}".format(uuid.uuid4().hex)
+                stateSnapshot_dict = {
+                                        "thread_id": thread_id,
+                                        "checkpoint_id": current_checkpoint_id,
+                                        "parent_checkpoint_id": parent_checkpoint_id,
+                                        "super_step": super_step,
+                                        "state": state,
+                                        "next_node_names": tuple(executable_node_names),
+                                        "created_at": self.get_created_at()
+                                     }
+                stateSnapshot = StateSnapshot(**stateSnapshot_dict)
+                self.checkpointer.put(stateSnapshot)
+                parent_checkpoint_id = current_checkpoint_id
         
         return state
         
@@ -239,6 +274,7 @@ if __name__ == "__main__":
     from state import AgentState
     from nodes import ModelNode,ToolNode
     from routers import router_after_model
+    from checkpoint import JsonlCheckpointer
     
     model_node = ModelNode(None, None)
     tool_node = ToolNode(None)
@@ -261,6 +297,7 @@ if __name__ == "__main__":
     print(graph.fixed_edges)
     print(graph.conditional_edges)
     
-    compiledStateGraph = graph.compile()
+    jsonlCheckpointer = JsonlCheckpointer()
+    compiledStateGraph = graph.compile(jsonlCheckpointer)
     
     print(compiledStateGraph.nodes is graph.nodes)

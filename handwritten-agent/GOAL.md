@@ -55,6 +55,8 @@ LLM决策
 - JSON 解析失败处理。
 - Tool 不存在、参数错误和执行异常处理。
 - Action 与 Observation 日志。
+- StateSnapshot、thread/checkpoint 标识与本地持久化。
+- 从下一批 Node 恢复执行，避免重复运行已完成 Node。
 
 模型动作格式：
 
@@ -103,7 +105,6 @@ LLM决策
 - 投递记录管理。
 - 面试准备与复盘。
 - Human-in-the-loop 中断恢复。
-- Checkpoint 持久化。
 - FastAPI 和前端。
 - 定时文档同步。
 - 多 Agent。
@@ -122,4 +123,5 @@ Agent
 + State
 + Loop
 + Error Handling
++ Checkpoint Recovery
 ```

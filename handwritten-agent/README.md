@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本是 **2026-08-06 核心流程快照**。它已经能够运行完整的 Model → Tool → Model 循环；Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
+当前版本是 **2026-08-07 Checkpoint 核心闭环快照**。它已经能够运行完整的 Model → Tool → Model 循环，并在每个成功提交的 Super-step 后保存可恢复的运行快照；HITL、Memory、Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
 
 ## 1. 当前实现范围
 
@@ -33,7 +33,11 @@ Model 决策
 - Fixed Edge、Conditional Edge、Router 和 `path_map`。
 - `START`、`END`、循环执行和最大 Super-step 限制。
 - Graph 编译期结构校验与 Node 可达性校验。
-- 外部传入 Agent State，实现一个 Agent 实例服务多个独立会话。
+- `StateSnapshot`、`Checkpointer`、`InMemoryCheckpointer` 和本地 `JsonlCheckpointer`。
+- 使用 `thread_id` 隔离会话，使用 UUID `checkpoint_id` 和 `parent_checkpoint_id` 维护快照血缘。
+- Super-step 成功提交后保存 `state + next_node_names`，支持从最新或指定 Checkpoint 恢复。
+- 新 UserMessage 从历史 State 重新经过 `START`；没有新 Input Update 时从 `next_node_names` 继续。
+- JSONL 落盘与进程重启恢复，一个 Agent 实例可以服务多个独立 thread。
 
 当前 Resume Agent 注册了两个 Tool：
 
@@ -45,11 +49,13 @@ Model 决策
 ```text
 User Input
     ↓
-Agent.run(user_input, agent_state)
+Agent.run(user_input, agent_state, thread_id, checkpoint_id)
     ↓
 构造包含 UserMessage 的 input_update
     ↓
-CompiledStateGraph.invoke(state, input_update)
+CompiledStateGraph.invoke(state, input_update, thread_id, checkpoint_id)
+    ↓
+按 thread_id 读取最新或指定 StateSnapshot
     ↓
 通过 Reducer 将 input_update 合并到 State
     ↓
@@ -92,13 +98,14 @@ State → Partial State Update
 | `state.py` | Message、ToolCall、AgentState、AgentStateUpdate 和 `add_messages` Reducer |
 | `runtime.py` | 提取 State Reducer，并按照 Super-step 规则合并多个 Node Update |
 | `graph.py` | StateGraph Builder、Graph 编译、Reducer 所有权、Transition、Router 调度和执行循环 |
+| `checkpoint.py` | StateSnapshot、Checkpointer 接口、内存快照与 JSONL 本地持久化 |
 | `model.py` | Qwen3 Model Adapter、消息格式转换和 ToolCall ID 标准化 |
 | `parser.py` | 解析模型原始输出，提取 `content`、`name` 和 `arguments` |
 | `nodes.py` | ModelNode 和 ToolNode |
 | `routers.py` | 根据最新 State 决定进入 ToolNode 或结束 |
 | `tools.py` | Tool 抽象、Tool Schema、参数校验、业务 Tool 和异常协议 |
 | `tool_register.py` | Tool 注册、按名称查找以及 Tool Definition 导出 |
-| `agent.py` | 组装 Resume Agent、构造单轮输入 Update，并接收调用方持有的会话 State |
+| `agent.py` | 组装 Resume Agent、注入 Checkpointer，并把 User Input、thread 和 checkpoint 交给 Runtime |
 
 ## 4. Message 与 ToolCall 协议
 
@@ -235,7 +242,7 @@ ToolExecutionException
 
 ToolNode 将这些可恢复异常转换成 `status="error"` 的 ToolMessage，保留原 `tool_call_id`，再让 Graph 回到 ModelNode。未声明为可恢复错误的程序 Bug 或系统故障继续向上抛出，不会被伪装成正常 Tool 结果。
 
-## 8. 会话 State
+## 8. Checkpoint 与会话 State
 
 `Agent` 本身保存的是可共享的组件：
 
@@ -246,19 +253,38 @@ Model
 + System Prompt
 ```
 
-具体对话状态由调用方持有：
+Checkpoint 开启后，每次调用必须提供 `thread_id`。Runtime 先查询对应历史：
 
-```python
-state_a = agent.create_initial_state()
-state_b = agent.create_initial_state()
+```text
+没有历史Snapshot
+→ 使用initial_state
 
-state_a = agent.run("用户A的问题", state_a)
-state_b = agent.run("用户B的问题", state_b)
+存在历史Snapshot
+→ 使用Snapshot.state，忽略传入的initial_state
 ```
 
-因此一个 Agent 实例可以服务多个用户；调用方必须为每个会话保存并传回各自的 State，不能让多个会话共享同一个 State 对象。
+若本次存在新的 `input_update`，Runtime 将其合并到 State 并从 `START` 开始新一轮执行；若 `input_update=None`，Runtime 直接从 Snapshot 的 `next_node_names` 恢复，不重复执行已经完成的 Node。
 
-当前版本没有 `thread_id` 和持久化 Checkpoint。进程退出后，调用方未保存的 State 会丢失。
+每个成功提交的 Super-step 生成一个 Snapshot：
+
+```text
+thread_id
+checkpoint_id
+parent_checkpoint_id
+super_step
+state
+next_node_names
+created_at
+```
+
+当前提供两种存储实现：
+
+- `InMemoryCheckpointer`：用于快速调试和进程内恢复。
+- `JsonlCheckpointer`：一行保存一个完整 Snapshot，支持进程重启后恢复。
+
+JSONL 采用追加写入；`get/list` 逐行扫描，因此查询复杂度是 `O(n)`。当前版本面向单机小规模学习场景，不实现并发写锁、索引和文件压缩。
+
+已通过最小恢复验证：ModelNode 完成后中断，恢复时只执行待执行的 ToolNode；再次恢复后继续 ModelNode，已提交的 Node 不会重复运行。
 
 ## 9. 运行方式
 
@@ -309,14 +335,14 @@ exit
 
 当前版本有意不实现以下生产能力：
 
-- 数据库和持久化存储。
+- 数据库、远程 Checkpointer、并发写入和分布式一致性。
+- Pending writes 与异步持久化。
 - 分布式执行与并发 Tool 调度。
 - 服务化、鉴权、配额和 Tool 沙箱。
 - 完整的自动化测试、评测和可观测性体系。
 
 以下 Agent 核心能力将在下一阶段最小手写：
 
-- Checkpoint。
 - Human-in-the-loop（HITL）。
 - Long-term Memory。
 - Streaming。
@@ -345,6 +371,7 @@ State 如何按 Reducer 更新
 Graph 如何按 Super-step 执行
 Router 如何决定下一跳
 错误如何转化为可恢复 Observation
+Checkpoint 如何保存并恢复 State 与下一批 Nodes
 ```
 
 完成高级核心能力后，再使用 LangGraph 重构同一业务流程，对照理解框架为这些底层机制提供的抽象。

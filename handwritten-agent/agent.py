@@ -12,12 +12,12 @@ from state import AgentState
 from nodes import ModelNode,ToolNode
 from routers import router_after_model
 
-
 class Agent:
-    def __init__(self, chat_model, register, system_prompt, max_steps=5):
+    def __init__(self, chat_model, register, system_prompt, checkpointer, max_steps=5):
         self.chat_model = chat_model
         self.register = register
         self.system_prompt = system_prompt
+        self.checkpointer = checkpointer
         self.max_steps = max_steps
         self.model_node = ModelNode(self.chat_model,self.register.get_tool_definitions())
         self.tool_node = ToolNode(self.register)
@@ -37,7 +37,7 @@ class Agent:
         
         state_graph.add_conditional_edges("model_node", router_after_model,path_map)
         
-        return state_graph.compile()
+        return state_graph.compile(self.checkpointer)
     
     def create_initial_state(self):
         system_message = {
@@ -51,18 +51,19 @@ class Agent:
                       }
         return agent_state
     
-    def run(self,user_input,agent_state):
+    def run(self,user_input,agent_state,thread_id,checkpoint_id):
         
+        if user_input is not None:
+            user_message = {
+                                "id":r"msg_{}".format(uuid.uuid4().hex),
+                                "role":"user",
+                                "content":user_input
+                           }
+            input_update = {"messages":[user_message]}
+        else:
+            input_update = None
 
-        
-        user_message = {
-                            "id":r"msg_{}".format(uuid.uuid4().hex),
-                            "role":"user",
-                            "content":user_input
-                       }
-        input_update = {"messages":[user_message]}
-
-        agent_state = self.compiled_graph.invoke(agent_state,input_update,recursion_limit=self.max_steps)
+        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_id, recursion_limit=self.max_steps)
 
 
         return agent_state
@@ -74,6 +75,7 @@ if __name__ == "__main__":
     from model import LocalChatModel
     from tool_register import Register
     from tools import read_resume_tool, search_project_evidence_tool
+    from checkpoint import JsonlCheckpointer
 
     register = Register()
     register.register(read_resume_tool)
@@ -91,20 +93,26 @@ if __name__ == "__main__":
         "只能依据工具返回的内容回答，"
         "不得编造经历。"
     )
+    checkpointer = JsonlCheckpointer()
 
     agent = Agent(
-        chat_model=chat_model,
-        register=register,
-        system_prompt=system_prompt,
-        max_steps=5,
+        chat_model= chat_model,
+        register= register,
+        system_prompt= system_prompt,
+        checkpointer= checkpointer,
+        max_steps= 5,
     )
     
     user_A_agent_state = agent.create_initial_state()
+    thread_id = r"thread_id_1"
+    checkpoint_id = None
+
     while True:
         user_input = input("用户: ")
         user_input = user_input.strip()
         if user_input == "exit":
             break
-        
-        user_A_agent_state = agent.run(user_input,user_A_agent_state)
+        if user_input == "":
+            user_input = None
+        user_A_agent_state = agent.run(user_input,user_A_agent_state, thread_id, checkpoint_id)
         print("assistant: ",user_A_agent_state["messages"][-1]["content"])

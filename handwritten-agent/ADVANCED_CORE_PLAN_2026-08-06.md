@@ -48,6 +48,8 @@ Checkpoint
 
 ## 3. Checkpoint
 
+**状态：已于 2026-08-07 完成最小手写闭环。**
+
 ### 3.1 要理解的核心概念
 
 Checkpoint 不是简单保存 `messages`，而是保存某个 Super-step 边界上能够继续执行 Graph 的运行快照。
@@ -57,10 +59,11 @@ Checkpoint 不是简单保存 `messages`，而是保存某个 Super-step 边界�
 ```text
 thread_id
 checkpoint_id
+parent_checkpoint_id
 super_step
 state
 next_node_names
-metadata
+created_at
 ```
 
 其中：
@@ -70,31 +73,37 @@ metadata
 - `super_step`：当前执行位置。
 - `thread_id`：隔离不同会话。
 - `checkpoint_id`：标识同一会话中的具体版本。
+- `parent_checkpoint_id`：记录快照血缘，支持后续历史分支。
+- `created_at`：记录创建时间，并用于历史排序。
 
 ### 3.2 最小实现
 
 - 定义 `StateSnapshot` 协议。
 - 定义 `Checkpointer` 接口。
 - 实现单进程 `InMemoryCheckpointer`。
+- 实现追加写入的本地 `JsonlCheckpointer`，支持进程重启恢复。
 - 按 `thread_id` 隔离快照。
 - 在 Super-step 提交完成后保存快照。
 - 支持读取最新快照并继续执行。
-- 支持读取指定 checkpoint，用于最小 replay/time-travel 演示。
+- 支持读取指定 checkpoint，为后续 replay/time-travel 保留入口。
 
 ### 3.3 验收场景
 
 ```text
 执行ModelNode
 → 保存Checkpoint
-→ 模拟进程内Run停止
+→ 模拟Run停止或进程重启
 → 根据thread_id读取Snapshot
 → 从next_node_names继续
 → 正常到达END
 ```
 
+实际验收覆盖 `ModelNode → ToolNode → ModelNode` 分段恢复，确认已完成 Node 不会重复执行，最终 Snapshot 的 `next_node_names=()`。
+
 ### 3.4 暂不实现
 
-- 数据库、磁盘和远程 Checkpointer。
+- 数据库和远程 Checkpointer。
+- Pending writes、异步持久化与并发文件写入。
 - 分布式锁与跨进程一致性。
 - Checkpoint 压缩、清理和迁移。
 
@@ -367,6 +376,7 @@ Multi-Agent如何通过Supervisor和结构化协议协作
 |---|---|
 | `StateSnapshot` | State Snapshot |
 | `InMemoryCheckpointer` | Checkpointer / In-memory Saver |
+| `JsonlCheckpointer` | 本地持久化 Checkpointer |
 | Interrupted Result + Resume | Interrupt / `Command(resume=...)` |
 | `InMemoryStore` | Store / Long-term Memory |
 | Runtime Events | `stream()` / Stream Modes |

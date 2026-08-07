@@ -6,7 +6,7 @@
 - `langchain-rag`：使用 LangChain 与 Milvus Standalone 重构同一条 RAG 链路。
 - `handwritten-agent`：不使用 LangGraph，手写 State、Reducer、Node、Edge、Router、Compiled Graph 和 Tool-Calling 循环。
 
-手写 Agent 的基础运行闭环已经完成，后续将在同一 Runtime 上补充 Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent，再使用 LangGraph 重构相同业务流程。
+手写 Agent 的基础运行闭环和 Checkpoint 核心闭环已经完成。后续将在同一 Runtime 上补充 HITL、Memory、Streaming、Subgraph 和 Multi-Agent，再使用 LangGraph 重构相同业务流程。
 
 ## 署名
 
@@ -40,6 +40,7 @@ rag-agent-demo/
 │   ├── state.py
 │   ├── runtime.py
 │   ├── graph.py
+│   ├── checkpoint.py
 │   ├── nodes.py
 │   ├── model.py
 │   ├── parser.py
@@ -135,7 +136,10 @@ User Input
 - `StateGraph` Builder、`CompiledStateGraph`、固定边和条件边。
 - 多个 Node 读取同一份旧 State，并在 Super-step 末统一提交 Updates。
 - `model_call_count` 加法 Reducer，支持多个模型 Node 累计调用次数。
-- 外部会话 State，使一个 Agent 实例能够服务多个独立会话。
+- `StateSnapshot`、Checkpointer 接口、内存存储和 JSONL 本地持久化。
+- 通过 `thread_id` 隔离执行历史，通过 UUID 和父 Checkpoint ID 维护版本血缘。
+- Super-step 后保存 State 与下一批 Nodes，支持新输入续聊和无新输入恢复。
+- JSONL 进程重启恢复，已完成 Node 不重复执行。
 
 详细说明见 [handwritten-agent/README.md](handwritten-agent/README.md)。
 

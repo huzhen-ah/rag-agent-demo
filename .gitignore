@@ -25,3 +25,6 @@ models/
 *.log
 *.tmp
 
+# Local agent checkpoints
+handwritten-agent/checkpoints/
+handwritten-agent/test.jsonl
