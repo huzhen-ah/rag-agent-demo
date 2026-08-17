@@ -9,9 +9,12 @@ Created on Tue Aug  4 09:59:18 2026
 
 from runtime import get_state_reducers,apply_updates
 from collections.abc import Hashable
-from checkpoint import StateSnapshot,Checkpointer
+from checkpoint import StateSnapshot, Checkpointer, PendingWrite
 import time
 import uuid
+from hitl import Task, TaskContext, TaskResult, PregelScratchpad, Command, _task_context_var
+from exceptions import GraphInterrupt
+
 
 START = "__start__"
 END = "__end__"
@@ -166,11 +169,141 @@ class CompiledStateGraph:
     def merge_updates(self,old_state,update_states):
         return apply_updates(old_state, update_states, self.key2reducer)
 
-    def invoke(self, initial_state, input_update=None, thread_id=None, checkpoint_id=None, recursion_limit=25):
+    def execute_task(self, task, state, checkpoint_id, resume_values=()):
+        scratchpad = PregelScratchpad(resume=list(resume_values))
+        task_context = TaskContext(checkpoint_id, task.task_id, scratchpad)
+        token = _task_context_var.set(task_context)
+        try:
+            node = self.nodes[task.node_name]
+            update = node(state)
+            task_result = TaskResult(task=task, update=update)
+            return task_result
+        except GraphInterrupt as error:
+            task_result = TaskResult(task=task, interrupts=error.args[0])
+            return task_result
+        except Exception as error:
+            task_result = TaskResult(task=task, error=error)
+            return task_result
+        finally:
+            _task_context_var.reset(token)
+        
+    def execute_tasks(self, tasks, state, thread_id, checkpoint_id):
+        saved_updates = {}
+        saved_resumes = {}
+        pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_id)
+        for write in pending_writes:
+            if write.channel == "update":
+                task_id = write.task_id
+                saved_updates[task_id] = write.value
+            elif write.channel == "resume":
+                task_id = write.task_id
+                saved_resumes[task_id] = write.value
+                
+                
+        task_results = []
+        for task in tasks:
+            if task.task_id in saved_updates:
+                task_result = TaskResult(task=task, update=saved_updates[task.task_id])
+                task_results.append(task_result)
+                continue
+            task_resume_values = saved_resumes.get(task.task_id,())
+            task_result = self.execute_task(task, state, checkpoint_id, task_resume_values)
+            task_results.append(task_result)
+            writes = self.task_result_to_writes(task_result)
+            self.checkpointer.put_writes(thread_id, checkpoint_id, writes)
+        return tuple(task_results)
+    
+    def task_result_to_writes(self, task_result):
+        task_id = task_result.task.task_id
+        if task_result.update is not None:
+            return (PendingWrite(task_id, "update", task_result.update),)
+        
+        if task_result.interrupts:
+            return (PendingWrite(task_id, "interrupt", task_result.interrupts),)
+        
+        if task_result.error is not None:
+            return (PendingWrite(task_id, "error", task_result.error),)
+        
+        raise RuntimeError("channel 必须是update|interrupts|error")
+        
+    def save_snapshot(
+            self,
+            thread_id,
+            parent_checkpoint_id,
+            super_step,
+            state,
+            next_node_names
+    ):
+        checkpoint_id = r"checkpoint_{}".format(uuid.uuid4().hex)
+        stateSnapshot_dict = {
+                                "thread_id": thread_id,
+                                "checkpoint_id": checkpoint_id,
+                                "parent_checkpoint_id": parent_checkpoint_id,
+                                "super_step": super_step,
+                                "state": state,
+                                "next_node_names": tuple(next_node_names),
+                                "created_at": self.get_created_at()
+                             }
+        stateSnapshot = StateSnapshot(**stateSnapshot_dict)
+        self.checkpointer.put(stateSnapshot)
+        return stateSnapshot
+    
+    def create_tasks(self, checkpoint_id, node_names):
+        tasks = []
+        for task_index, node_name in enumerate(sorted(node_names)):
+            task_id = "{}:{}:{}".format(checkpoint_id, task_index, node_name)
+            task_id = str(uuid.uuid5(namespace=uuid.NAMESPACE_OID, name=task_id))
+            tasks.append(Task(task_id, node_name))
+        return tuple(tasks)
+    
+    def save_resume_value(self, thread_id, checkpoint_id, command_resume):
+        pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_id)
+        interrupt_writes = [write for write in pending_writes if write.channel == "interrupt"]
+        
+        if isinstance(command_resume, dict):#多个interrrupt同时更新来了
+            interrupt_id_2_task_id = {}
+            for write in interrupt_writes:
+                task_id = write.task_id
+                for interrupt_data in write.value:
+                    interrupt_id = interrupt_data.id
+                    interrupt_id_2_task_id[interrupt_id] = task_id
+            unknown_interrupt_ids = set(command_resume) - set(interrupt_id_2_task_id)
+            if unknown_interrupt_ids:
+                raise RuntimeError("不存在对应中断的interrupt_ids: {}".format(unknown_interrupt_ids))
+            task_id_2_resume_value = {}
+            for write in pending_writes:
+                if write.channel == "resume":
+                    task_id_2_resume_value[write.task_id] = list(write.value)
+            for interrupt_id, value in command_resume.items():
+                task_id = interrupt_id_2_task_id[interrupt_id]
+                if task_id not in task_id_2_resume_value:
+                    task_id_2_resume_value[task_id] = []
+                task_id_2_resume_value[task_id].append(value)
+            writes = tuple(PendingWrite(task_id, "resume", value) for task_id, value in task_id_2_resume_value.items())
+            self.checkpointer.put_writes(thread_id, checkpoint_id, writes)
+        
+        else:
+            raise RuntimeError(r"command_resume是Command的resume字段值，必须是{interrupt_id:single_resume_value}")
+        
+    def invoke(self, graph_input, input_update=None, thread_id=None, checkpoint_id=None, recursion_limit=25):
+        """
+        graph_input:只有2种可能：
+        1.init_state
+        2.resume_command
+        """
         if thread_id is None:
             raise ValueError("必须传入thread_id")
+        resume_command = graph_input if isinstance(graph_input, Command) else None
+        
         
         stateSnapshot = self.checkpointer.get(thread_id,checkpoint_id)
+        if resume_command is not None:
+            if stateSnapshot is None:
+                raise RuntimeError("Command.resume必须依附已有checkpoint")
+            if input_update is not None:
+                raise RuntimeError("恢复中断时不能同时传入input_update")
+            if resume_command.update is not None or resume_command.graph is not None or resume_command.goto:
+                raise RuntimeError("目前只支持Command.resume")
         if stateSnapshot:
             parent_checkpoint_id = stateSnapshot.checkpoint_id
             state = stateSnapshot.state
@@ -178,30 +311,44 @@ class CompiledStateGraph:
                 state = self.merge_updates(state, [input_update])
                 start_transition = self.transitions[START]
                 executable_node_names = start_transition.resolve_targets(state) - {END}
+                stateSnapshot = self.save_snapshot(thread_id, parent_checkpoint_id, stateSnapshot.super_step, state, tuple(executable_node_names))
             else:
                 executable_node_names = set(stateSnapshot.next_node_names)
             super_step = stateSnapshot.super_step
             recursion_limit += super_step
         else:
             parent_checkpoint_id = None
-            state = initial_state
+            state = graph_input
             if input_update is not None:
                 state = self.merge_updates(state, [input_update])
             start_transition = self.transitions[START]
             executable_node_names = start_transition.resolve_targets(state) - {END}
             super_step = 0
+            stateSnapshot = self.save_snapshot(thread_id, parent_checkpoint_id, super_step, state, tuple(executable_node_names))
 
-        
+        parent_checkpoint_id = stateSnapshot.checkpoint_id
+        if resume_command is not None:
+            self.save_resume_value(thread_id, stateSnapshot.checkpoint_id, resume_command.resume)
         while executable_node_names:
             
             if super_step >= recursion_limit:
                 raise RuntimeError("Graph 超过最大super-step步数:{}".format(recursion_limit))
-            update_states = []
+
+            tasks = self.create_tasks(stateSnapshot.checkpoint_id, executable_node_names)
             
-            for node_name in executable_node_names:
-                node = self.nodes[node_name]
-                update_state = node(state)
-                update_states.append(update_state)
+            task_results = self.execute_tasks(tasks, state, thread_id, stateSnapshot.checkpoint_id)
+            
+            errors = [task_result.error for task_result in task_results if task_result.error is not None]
+            if len(errors) > 0:
+                raise errors[0]
+                
+            interrupts = tuple(interrupt for task_result in task_results for interrupt in task_result.interrupts)
+            if interrupts:
+                output = dict(state)
+                output["__interrupt__"] = interrupts
+                return output
+            
+            update_states = [task_result.update for task_result in task_results]
             state = self.merge_updates(state, update_states)
             
             active_node_names = set()
@@ -211,19 +358,8 @@ class CompiledStateGraph:
             executable_node_names = active_node_names - {END}
             super_step += 1
             if self.checkpointer and thread_id:
-                current_checkpoint_id = r"checkpoint_{}".format(uuid.uuid4().hex)
-                stateSnapshot_dict = {
-                                        "thread_id": thread_id,
-                                        "checkpoint_id": current_checkpoint_id,
-                                        "parent_checkpoint_id": parent_checkpoint_id,
-                                        "super_step": super_step,
-                                        "state": state,
-                                        "next_node_names": tuple(executable_node_names),
-                                        "created_at": self.get_created_at()
-                                     }
-                stateSnapshot = StateSnapshot(**stateSnapshot_dict)
-                self.checkpointer.put(stateSnapshot)
-                parent_checkpoint_id = current_checkpoint_id
+                stateSnapshot = self.save_snapshot(thread_id, parent_checkpoint_id, super_step, state, executable_node_names)
+                parent_checkpoint_id = stateSnapshot.checkpoint_id
         
         return state
         

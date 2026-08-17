@@ -14,3 +14,6 @@ class ToolExecutionException(Exception):
 
 class ResumeNotFoundException(ToolExecutionException):
     pass
+
+class GraphInterrupt(Exception):
+    pass

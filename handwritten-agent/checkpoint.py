@@ -6,11 +6,14 @@ Created on Thu Aug  6 21:53:53 2026
 @author: huzhen
 """
 
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Literal
+from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from copy import deepcopy
 import json
 import os
+from hitl import Interrupt
+
 
 class StateSnapshot(NamedTuple):
     thread_id: str
@@ -22,27 +25,43 @@ class StateSnapshot(NamedTuple):
     created_at: str
 
 
+@dataclass(frozen=True)
+class PendingWrite:
+    task_id: str
+    channel: Literal["update", "interrupt", "error", "resume"]
+    value: Any
+    
+    
 class Checkpointer(ABC):
     @abstractmethod
-    def put(self,snapshot: StateSnapshot) -> None:
+    def put(self, snapshot: StateSnapshot) -> None:
         pass
 
     @abstractmethod
-    def get(self,thread_id: str, checkpoint_id: str | None = None) -> StateSnapshot | None:
+    def get(self, thread_id: str, checkpoint_id: str | None = None) -> StateSnapshot | None:
         pass
 
-
     @abstractmethod
-    def list(self,thread_id: str) -> tuple[StateSnapshot,...]:
+    def list(self, thread_id: str) -> tuple[StateSnapshot, ...]:
         #同一 thread 的快照，按 created_at 从新到旧返回
         pass
 
-
-
+    @abstractmethod
+    def put_writes(self,thread_id, checkpoint_id, writes) -> None:
+        pass
+    
+    @abstractmethod
+    def get_writes(self, thread_id, checkpoint_id) -> tuple[PendingWrite, ...]:
+        pass
+    
+    
 class InMemoryCheckpointer(Checkpointer):
     def __init__(self):
         self.checkpoints: dict[str, dict[str, StateSnapshot]] = {}
-
+        self.checkpoint_key = tuple[str, str]
+        self.write_key = tuple[str, str]
+        self.pending_writes: dict[self.checkpoint_key,dict[self.write_key,PendingWrite]] = {}
+        
     def put(self,snapshot: StateSnapshot) -> None:
         thread_id = snapshot.thread_id
         checkpoint_id = snapshot.checkpoint_id
@@ -71,17 +90,34 @@ class InMemoryCheckpointer(Checkpointer):
         sorted_checkpoint_ids = [_[1] for _ in sorted(created_ats,key=lambda x : x[0],reverse=True)]
         return tuple(deepcopy(self.checkpoints[thread_id][checkpoint_id]) for checkpoint_id in sorted_checkpoint_ids)
 
+    def put_writes(self, thread_id, checkpoint_id, writes) -> None:
+        checkpoint_key = (thread_id,checkpoint_id)
+        if checkpoint_key not in self.pending_writes:
+            self.pending_writes[checkpoint_key] = {}
+        for write in writes:
+            write_key = (write.task_id,write.channel)
+            self.pending_writes[checkpoint_key][write_key] = deepcopy(write)
+            
+    def get_writes(self, thread_id, checkpoint_id) -> tuple[PendingWrite, ...]:
+        checkpoint_key = (thread_id,checkpoint_id)
+        if checkpoint_key not in self.pending_writes:
+            return ()
+        return tuple(deepcopy(write) for write in self.pending_writes[checkpoint_key].values())
+    
+    
 class JsonlCheckpointer(Checkpointer):
-    def __init__(self,local_checkpoint_file=r"checkpoints/checkpoints.jsonl"):
+    def __init__(self,local_checkpoint_file=r"checkpoints/checkpoints.jsonl", local_pending_writes_file=r"checkpoints/pending_writes.jsonl"):
         self.local_checkpoint_file = local_checkpoint_file
+        self.local_pending_writes_file = local_pending_writes_file
         self.valid_path(self.local_checkpoint_file)
-
+        self.valid_path(self.local_pending_writes_file)
+        
     def valid_path(self,file):
         if not os.path.isfile(file):
-            fold = os.path.split(self.local_checkpoint_file)[0]
+            fold = os.path.split(file)[0]
             if fold and not os.path.isdir(fold):
                 os.makedirs(fold)
-            with open(file,"a",encoding="utf8") as f:
+            with open(file,"a",encoding="utf8") as _:
                 pass
 
     def _serialize(self,snapshot: StateSnapshot) -> str:
@@ -116,8 +152,6 @@ class JsonlCheckpointer(Checkpointer):
                         ret = snapshot
         return ret
 
-
-
     def list(self,thread_id: str) -> tuple[StateSnapshot,...]:
         ret = []
         with open(self.local_checkpoint_file,"r",encoding="utf8") as f:
@@ -131,3 +165,81 @@ class JsonlCheckpointer(Checkpointer):
         if ret:
             ret = ret[::-1]
         return tuple(ret)
+    
+    def writes_to_json(self, thread_id, checkpoint_id, writes):
+        ret = []
+        for write in writes:
+            task_id = write.task_id
+            channel = write.channel
+            value = write.value
+            
+            if channel == "update":#AgentStateUpdate
+                pass
+            elif channel == "resume":
+                pass
+            elif channel == "interrupt":
+                value = [{"value" : _.value, "id" : _.id} for _ in value]
+            elif channel == "error":
+                value = {"type":type(value).__name__,"message":str(value)}
+            else:
+                raise TypeError("channel必须是update|resume|interrupt|error")
+            
+            data = {
+                        "thread_id": thread_id,
+                        "checkpoint_id": checkpoint_id,
+                        "task_id": task_id,
+                        "channel": channel,
+                        "value":value
+                   }
+                
+            data_json = json.dumps(data,ensure_ascii=False)
+            ret.append(data_json+"\n")
+        return ret
+    
+    def put_writes(self, thread_id, checkpoint_id, writes) -> None:
+        json_writes = self.writes_to_json(thread_id, checkpoint_id, writes)
+        with open(self.local_pending_writes_file, "a", encoding="utf8") as f:
+            f.writelines(json_writes)
+            
+    def _deserialize_writes(self,writes):
+        ret = []
+        for write in writes.values():
+            task_id = write["task_id"]
+            channel = write["channel"]
+            value = write["value"]
+            
+            if channel == "update":
+                pass
+            elif channel == "resume":
+                pass
+            elif channel == "interrupt":
+                value = tuple(Interrupt(v["value"], v["id"]) for v in value)
+            elif channel == "error":
+                value = RuntimeError("{}:{}".format(value["type"],value["message"]))
+            else:
+                raise TypeError("channel必须是update|resume|interrupt|error")
+            ret.append(PendingWrite(task_id, channel, value))
+        return tuple(ret)
+    
+    def get_writes(self, thread_id, checkpoint_id) -> tuple[PendingWrite, ...]:
+        writes = {}
+        
+        with open(self.local_pending_writes_file, "r", encoding="utf8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                
+                if data["thread_id"] == thread_id and data["checkpoint_id"] == checkpoint_id:
+                    write_key = (data["task_id"],data["channel"])
+                    writes[write_key] = data
+        if not writes:
+            return ()
+        
+        return self._deserialize_writes(writes)
+        
+                
+                    
+                
+                

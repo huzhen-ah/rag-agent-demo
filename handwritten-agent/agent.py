@@ -9,33 +9,50 @@ Created on Wed Jul 29 19:48:47 2026
 import uuid
 from graph import StateGraph,START,END
 from state import AgentState
-from nodes import ModelNode,ToolNode
+from nodes import ModelNode, ToolNode, ToolArgsCompletionNode, ToolReviewNode
 from routers import router_after_model
+from hitl import Command
+import json
+
+
 
 class Agent:
-    def __init__(self, chat_model, register, system_prompt, checkpointer, max_steps=5):
+    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, max_steps=5):
         self.chat_model = chat_model
         self.register = register
         self.system_prompt = system_prompt
         self.checkpointer = checkpointer
+        self.tool_hitl_policy = tool_hitl_policy
         self.max_steps = max_steps
         self.model_node = ModelNode(self.chat_model,self.register.get_tool_definitions())
         self.tool_node = ToolNode(self.register)
+        self.tool_args_completion_node = ToolArgsCompletionNode(self.register, self.tool_hitl_policy)
+        self.tool_review_node = ToolReviewNode(tool_hitl_policy)
         self.compiled_graph = self.init_graph()
         
     def init_graph(self):
         state_graph = StateGraph(AgentState)
         state_graph.add_node("model_node", self.model_node)
         state_graph.add_node("tool_node", self.tool_node)
+        state_graph.add_node("tool_args_completion_node", self.tool_args_completion_node)
+        state_graph.add_node("tool_review_node", self.tool_review_node)
         state_graph.add_edge(START, "model_node")
+        state_graph.add_edge("tool_review_node", "tool_node")
         state_graph.add_edge("tool_node", "model_node")
         
-        path_map = {
-                        "need_tools":"tool_node",
+        model_path_map = {
+                        "need_tools":"tool_args_completion_node",
                         "finished":END
                    }
         
-        state_graph.add_conditional_edges("model_node", router_after_model,path_map)
+        state_graph.add_conditional_edges("model_node", router_after_model,model_path_map)
+        
+        tool_args_completion_path_map = {
+                        "needs_more_args" : "tool_args_completion_node",
+                        "tool_review_node" : "tool_review_node"
+                   }
+        
+        state_graph.add_conditional_edges("tool_args_completion_node", self.tool_args_completion_node.router_after_toolArgsCompletionNode, tool_args_completion_path_map)
         
         return state_graph.compile(self.checkpointer)
     
@@ -51,7 +68,11 @@ class Agent:
                       }
         return agent_state
     
-    def run(self,user_input,agent_state,thread_id,checkpoint_id):
+    def run(self, user_input, agent_state, thread_id, checkpoint_id):
+        
+        if isinstance(user_input, Command):
+            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps)
+        
         
         if user_input is not None:
             user_message = {
@@ -93,18 +114,25 @@ if __name__ == "__main__":
         "只能依据工具返回的内容回答，"
         "不得编造经历。"
     )
+    
+    tool_hitl_policy = {
+        "read_resume": ("args_completion","review"),
+        "search_project_evidence": ("review",)
+    }
     checkpointer = JsonlCheckpointer()
 
+    
     agent = Agent(
         chat_model= chat_model,
         register= register,
         system_prompt= system_prompt,
         checkpointer= checkpointer,
+        tool_hitl_policy= tool_hitl_policy,
         max_steps= 5,
     )
     
     user_A_agent_state = agent.create_initial_state()
-    thread_id = r"thread_id_1"
+    thread_id = "thread_{}".format(uuid.uuid4().hex)
     checkpoint_id = None
 
     while True:
@@ -115,4 +143,23 @@ if __name__ == "__main__":
         if user_input == "":
             user_input = None
         user_A_agent_state = agent.run(user_input,user_A_agent_state, thread_id, checkpoint_id)
+        # print(user_A_agent_state)
+        while "__interrupt__" in user_A_agent_state:
+            interrupts = user_A_agent_state["__interrupt__"]
+            command_resume = {}
+            for interrupt in interrupts:
+                print(
+                        "interrupt_request: ",
+                        json.dumps(
+                            interrupt.value,
+                            ensure_ascii=False,
+                            indent=2,
+                            )
+                      )
+                resume_text = input("请输入resume_value(json): ")
+                resume_value = json.loads(resume_text)
+                command_resume[interrupt.id] = resume_value
+            resume_command = Command(resume=command_resume)
+            user_A_agent_state = agent.run(resume_command, user_A_agent_state, thread_id, checkpoint_id)
+                
         print("assistant: ",user_A_agent_state["messages"][-1]["content"])

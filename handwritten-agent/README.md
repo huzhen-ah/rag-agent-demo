@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本是 **2026-08-07 Checkpoint 核心闭环快照**。它已经能够运行完整的 Model → Tool → Model 循环，并在每个成功提交的 Super-step 后保存可恢复的运行快照；HITL、Memory、Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
+当前版本已经完成 **Checkpoint + HITL 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，并在 Node 内通过 `interrupt()` 暂停执行，等待人工补参或审核后使用 `Command.resume` 恢复原 Task。Memory、Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
 
 ## 1. 当前实现范围
 
@@ -38,6 +38,11 @@ Model 决策
 - Super-step 成功提交后保存 `state + next_node_names`，支持从最新或指定 Checkpoint 恢复。
 - 新 UserMessage 从历史 State 重新经过 `START`；没有新 Input Update 时从 `next_node_names` 继续。
 - JSONL 落盘与进程重启恢复，一个 Agent 实例可以服务多个独立 thread。
+- `Task`、`TaskResult`、`TaskContext`、`PregelScratchpad` 和基于 `ContextVar` 的 Task 执行上下文。
+- `interrupt(value)`、`Interrupt`、`GraphInterrupt` 和 `Command.resume`。
+- task-level pending writes：保存 `update`、`interrupt`、`error` 和 `resume`。
+- Super-step 中部分 Task 中断时不提交 State；恢复时复用已经完成的兄弟 Task，只重跑尚未完成的 Task。
+- 工具执行前的参数补全与人工审核，支持 approve、edit 和 reject。
 
 当前 Resume Agent 注册了两个 Tool：
 
@@ -67,13 +72,17 @@ START → ModelNode
              ↓
       AssistantMessage
         ├── 无 ToolCall → END
-        └── 有 ToolCall → ToolNode
-                              ↓
-                    参数校验与 Tool 执行
-                              ↓
-                         ToolMessage
-                              ↓
-                           ModelNode
+        └── 有 ToolCall → ToolArgsCompletionNode
+                              ├── 仍缺少必需参数 → interrupt → 恢复后重新检查
+                              └── 参数完整 → ToolReviewNode
+                                                   ├── 需要审核 → interrupt → approve/edit/reject
+                                                   └── 无需审核或审核完成 → ToolNode
+                                                                                 ↓
+                                                                       参数校验与 Tool 执行
+                                                                                 ↓
+                                                                            ToolMessage
+                                                                                 ↓
+                                                                              ModelNode
 ```
 
 每个 Graph Super-step 遵循：
@@ -97,11 +106,12 @@ State → Partial State Update
 |---|---|
 | `state.py` | Message、ToolCall、AgentState、AgentStateUpdate 和 `add_messages` Reducer |
 | `runtime.py` | 提取 State Reducer，并按照 Super-step 规则合并多个 Node Update |
-| `graph.py` | StateGraph Builder、Graph 编译、Reducer 所有权、Transition、Router 调度和执行循环 |
-| `checkpoint.py` | StateSnapshot、Checkpointer 接口、内存快照与 JSONL 本地持久化 |
+| `graph.py` | StateGraph Builder、Graph 编译、Task 调度、Transition、Router、interrupt 捕获和恢复执行循环 |
+| `checkpoint.py` | StateSnapshot、PendingWrite、Checkpointer 接口、内存快照与 JSONL 本地持久化 |
+| `hitl.py` | Interrupt、Command、Task、TaskContext、PregelScratchpad、ContextVar 和 `interrupt()` |
 | `model.py` | Qwen3 Model Adapter、消息格式转换和 ToolCall ID 标准化 |
 | `parser.py` | 解析模型原始输出，提取 `content`、`name` 和 `arguments` |
-| `nodes.py` | ModelNode 和 ToolNode |
+| `nodes.py` | ModelNode、ToolArgsCompletionNode、ToolReviewNode 和 ToolNode |
 | `routers.py` | 根据最新 State 决定进入 ToolNode 或结束 |
 | `tools.py` | Tool 抽象、Tool Schema、参数校验、业务 Tool 和异常协议 |
 | `tool_register.py` | Tool 注册、按名称查找以及 Tool Definition 导出 |
@@ -336,24 +346,24 @@ exit
 当前版本有意不实现以下生产能力：
 
 - 数据库、远程 Checkpointer、并发写入和分布式一致性。
-- Pending writes 与异步持久化。
+- Pending writes 的异步持久化。
 - 分布式执行与并发 Tool 调度。
 - 服务化、鉴权、配额和 Tool 沙箱。
 - 完整的自动化测试、评测和可观测性体系。
 
 以下 Agent 核心能力将在下一阶段最小手写：
 
-- Human-in-the-loop（HITL）。
 - Long-term Memory。
 - Streaming。
 - Subgraph。
 - Multi-Agent。
 
-当前错误 ToolMessage 可以让模型纠正参数或向用户追问，但“用户补充参数后确定性恢复原 ToolCall”尚未实现。该能力需要保存 `pending_tool_call`、中断 Graph，并在获得人工输入后恢复执行，将在 Checkpoint + HITL 阶段统一实现。
+当前 HITL 只接受结构化的 `Command(resume={interrupt_id: resume_value})`。自然语言反馈需要在调用 Runtime 前由规则或 LLM 转换为结构化 `resume_value`。`Command.update`、`Command.goto` 和 `Command.graph` 暂未实现。
 
 ## 11. 设计文档
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)：完整架构设计与协议说明。
+- [`HITL_DESIGN.md`](HITL_DESIGN.md)：HITL Runtime、工具补参与审核流程及当前边界。
 - [`ADVANCED_CORE_PLAN_2026-08-06.md`](ADVANCED_CORE_PLAN_2026-08-06.md)：Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent 计划。
 - [`TODAY_PLAN_2026-08-04.md`](TODAY_PLAN_2026-08-04.md)：Graph Runtime 核心实现计划。
 
@@ -372,6 +382,8 @@ Graph 如何按 Super-step 执行
 Router 如何决定下一跳
 错误如何转化为可恢复 Observation
 Checkpoint 如何保存并恢复 State 与下一批 Nodes
+Task 如何保存部分执行结果并在中断后恢复
+interrupt 如何暂停 Node 并通过 Command.resume 返回人工反馈
 ```
 
 完成高级核心能力后，再使用 LangGraph 重构同一业务流程，对照理解框架为这些底层机制提供的抽象。
