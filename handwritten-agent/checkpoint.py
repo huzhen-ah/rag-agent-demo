@@ -166,7 +166,7 @@ class JsonlCheckpointer(Checkpointer):
             ret = ret[::-1]
         return tuple(ret)
     
-    def writes_to_json(self, thread_id, checkpoint_id, writes):
+    def _serialize_writes(self, thread_id, checkpoint_id, writes):
         ret = []
         for write in writes:
             task_id = write.task_id
@@ -197,7 +197,7 @@ class JsonlCheckpointer(Checkpointer):
         return ret
     
     def put_writes(self, thread_id, checkpoint_id, writes) -> None:
-        json_writes = self.writes_to_json(thread_id, checkpoint_id, writes)
+        json_writes = self._serialize_writes(thread_id, checkpoint_id, writes)
         with open(self.local_pending_writes_file, "a", encoding="utf8") as f:
             f.writelines(json_writes)
             

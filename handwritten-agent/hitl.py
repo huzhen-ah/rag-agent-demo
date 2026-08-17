@@ -12,7 +12,7 @@ import uuid
 from exceptions import GraphInterrupt
 
 
-@dataclass(slots=True)
+@dataclass(slots=True)#slot=True的意思是：这个类的实例只能拥有预先声明的字段，不能运行时随便添加新字段。
 class Interrupt:
     value: Any
     id: str
@@ -70,8 +70,8 @@ def interrupt(value):
         return scratchpad.resume[interrupt_index]
     
     interrupt_id = uuid.uuid5(
-            namespace= uuid.NAMESPACE_OID, 
-            name= "{}_{}".format(task_context.checkpoint_id,task_context.task_id)
+            namespace = uuid.NAMESPACE_OID, 
+            name = "{}_{}".format(task_context.checkpoint_id,task_context.task_id)
     ).hex
     
     interrupt_data = Interrupt(value=value, id=interrupt_id)

@@ -68,7 +68,7 @@ class Agent:
                       }
         return agent_state
     
-    def run(self, user_input, agent_state, thread_id, checkpoint_id):
+    def invoke(self, user_input, agent_state, thread_id, checkpoint_id):
         
         if isinstance(user_input, Command):
             return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps)
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     register.register(search_project_evidence_tool)
 
     chat_model = LocalChatModel(
-        model_path="models/Qwen3-1.7B",
+        model_path="models/Qwen3-4B",
         device="mps",
     )
 
@@ -142,7 +142,7 @@ if __name__ == "__main__":
             break
         if user_input == "":
             user_input = None
-        user_A_agent_state = agent.run(user_input,user_A_agent_state, thread_id, checkpoint_id)
+        user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_id)
         # print(user_A_agent_state)
         while "__interrupt__" in user_A_agent_state:
             interrupts = user_A_agent_state["__interrupt__"]
@@ -160,6 +160,6 @@ if __name__ == "__main__":
                 resume_value = json.loads(resume_text)
                 command_resume[interrupt.id] = resume_value
             resume_command = Command(resume=command_resume)
-            user_A_agent_state = agent.run(resume_command, user_A_agent_state, thread_id, checkpoint_id)
+            user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_id)
                 
         print("assistant: ",user_A_agent_state["messages"][-1]["content"])

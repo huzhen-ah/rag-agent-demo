@@ -17,7 +17,7 @@ class LocalChatModel:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path, 
             local_files_only=True, 
-            dtype=torch.float32).to(device)
+            dtype=torch.float16).to(device)
 
     def generate(self, messages, tool_definitions, max_new_tokens=300):
         model_inputs = self.tokenizer.apply_chat_template(
@@ -30,7 +30,14 @@ class LocalChatModel:
             return_tensors="pt"
         )
         model_inputs = model_inputs.to(self.model.device)
-        outputs = self.model.generate(**model_inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        outputs = self.model.generate(
+                        **model_inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=True,
+                        temperature=0.7,
+                        top_p=0.8,
+                        top_k=20
+        )
 
         input_length = model_inputs["input_ids"].shape[1]
         generated_ids = outputs[0, input_length:]
@@ -77,16 +84,16 @@ if __name__ == "__main__":
     register = Register()
     register.register(read_resume_tool)
 
-    chat_model = LocalChatModel(model_path="models/Qwen3-1.7B", device="mps")
+    chat_model = LocalChatModel(model_path="models/Qwen3-4B", device="mps")
 
     messages = [
         {
             "role": "system",
-            "content": "你是一个求职助手。需要外部信息时请调用工具。",
+            "content": "你是一个求职助手。需要外部信息时请调用工具，如果工具需要参数，但是你拿不到，就把工具列出来，参数先缺失。",
         },
         {
             "role": "user",
-            "content": "请读取main简历，告诉我求职方向。",
+            "content": "请读取简历，告诉我求职方向。",
         },
     ]
 

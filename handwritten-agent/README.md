@@ -54,7 +54,7 @@ Model 决策
 ```text
 User Input
     ↓
-Agent.run(user_input, agent_state, thread_id, checkpoint_id)
+Agent.invoke(user_input, agent_state, thread_id, checkpoint_id)
     ↓
 构造包含 UserMessage 的 input_update
     ↓
