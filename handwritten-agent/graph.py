@@ -7,13 +7,15 @@ Created on Tue Aug  4 09:59:18 2026
 """
 
 
-from runtime import get_state_reducers,apply_updates
+from runtime import get_state_reducers, apply_updates, Runtime
 from collections.abc import Hashable
 from checkpoint import StateSnapshot, Checkpointer, PendingWrite
 import time
 import uuid
 from hitl import Task, TaskContext, TaskResult, PregelScratchpad, Command, _task_context_var
 from exceptions import GraphInterrupt
+from memory import BaseStore
+import inspect
 
 
 START = "__start__"
@@ -115,7 +117,7 @@ class StateGraph:
         return reached_nodes
         
         
-    def compile(self, checkpointer: Checkpointer):
+    def compile(self, checkpointer: Checkpointer, store: BaseStore = None):
         if START not in self.fixed_edges and START not in self.conditional_edges:
             raise ValueError("START必须至少存在于fixed_edges和conditional_edges中的一个，其实只能存在于一个")
         overlapping_sources = set(self.fixed_edges).intersection(set(self.conditional_edges))
@@ -153,14 +155,15 @@ class StateGraph:
         if unreached_nodes:
             raise ValueError("从START开始，存在未到达的nodes:{}".format(unreached_nodes))
 
-        return CompiledStateGraph(self.state_schema,nodes,transitions,checkpointer)
+        return CompiledStateGraph(self.state_schema, nodes, transitions, checkpointer, store)
     
 class CompiledStateGraph:
-    def __init__(self, state_schema, nodes, transitions, checkpointer=None):
+    def __init__(self, state_schema, nodes, transitions, checkpointer=None, store=None):
         self.state_schema = state_schema
         self.nodes = nodes
         self.transitions = transitions
         self.checkpointer = checkpointer
+        self.store = store
         self.key2reducer = get_state_reducers(state_schema)
         
     def get_created_at(self):
@@ -169,13 +172,16 @@ class CompiledStateGraph:
     def merge_updates(self,old_state,update_states):
         return apply_updates(old_state, update_states, self.key2reducer)
 
-    def execute_task(self, task, state, checkpoint_id, resume_values=()):
+    def execute_task(self, task, state, checkpoint_id, resume_values=(), runtime=None):
         scratchpad = PregelScratchpad(resume=list(resume_values))
         task_context = TaskContext(checkpoint_id, task.task_id, scratchpad)
         token = _task_context_var.set(task_context)
         try:
             node = self.nodes[task.node_name]
-            update = node(state)
+            if "runtime" in inspect.signature(node).parameters:
+                update = node(state, runtime=runtime)
+            else:
+                update = node(state)
             task_result = TaskResult(task=task, update=update)
             return task_result
         except GraphInterrupt as error:
@@ -187,7 +193,7 @@ class CompiledStateGraph:
         finally:
             _task_context_var.reset(token)
         
-    def execute_tasks(self, tasks, state, thread_id, checkpoint_id):
+    def execute_tasks(self, tasks, state, thread_id, checkpoint_id, runtime):
         saved_updates = {}
         saved_resumes = {}
         pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_id)
@@ -207,7 +213,7 @@ class CompiledStateGraph:
                 task_results.append(task_result)
                 continue
             task_resume_values = saved_resumes.get(task.task_id,())
-            task_result = self.execute_task(task, state, checkpoint_id, task_resume_values)
+            task_result = self.execute_task(task, state, checkpoint_id, task_resume_values, runtime)
             task_results.append(task_result)
             writes = self.task_result_to_writes(task_result)
             self.checkpointer.put_writes(thread_id, checkpoint_id, writes)
@@ -285,14 +291,17 @@ class CompiledStateGraph:
         else:
             raise RuntimeError(r"command_resume是Command的resume字段值，必须是{interrupt_id:single_resume_value}")
         
-    def invoke(self, graph_input, input_update=None, thread_id=None, checkpoint_id=None, recursion_limit=25):
+    def invoke(self, graph_input, input_update=None, thread_id=None, checkpoint_id=None, recursion_limit=25, context=None):
         """
         graph_input:只有2种可能：
         1.init_state
         2.resume_command
         """
+        
         if thread_id is None:
             raise ValueError("必须传入thread_id")
+        
+        runtime = Runtime(context=context, store=self.store)
         resume_command = graph_input if isinstance(graph_input, Command) else None
         
         
@@ -336,7 +345,7 @@ class CompiledStateGraph:
 
             tasks = self.create_tasks(stateSnapshot.checkpoint_id, executable_node_names)
             
-            task_results = self.execute_tasks(tasks, state, thread_id, stateSnapshot.checkpoint_id)
+            task_results = self.execute_tasks(tasks, state, thread_id, stateSnapshot.checkpoint_id, runtime=runtime)
             
             errors = [task_result.error for task_result in task_results if task_result.error is not None]
             if len(errors) > 0:

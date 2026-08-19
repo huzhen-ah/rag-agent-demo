@@ -9,6 +9,8 @@ Created on Mon Aug  3 16:09:04 2026
 from state import AgentState,AgentStateUpdate
 from typing import get_type_hints,get_origin,get_args,Annotated
 from copy import deepcopy
+from dataclasses import dataclass
+from memory import BaseStore
 
 
 def get_state_reducers(StateClass):
@@ -54,6 +56,10 @@ def apply_updates(old_state:AgentState,update_states:list[AgentStateUpdate],key2
     return merged_state
     
     
+@dataclass
+class Runtime:
+    context: dict | None = None
+    store: BaseStore | None = None
     
 
 

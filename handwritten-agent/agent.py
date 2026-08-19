@@ -9,7 +9,7 @@ Created on Wed Jul 29 19:48:47 2026
 import uuid
 from graph import StateGraph,START,END
 from state import AgentState
-from nodes import ModelNode, ToolNode, ToolArgsCompletionNode, ToolReviewNode
+from nodes import ModelNode, ToolNode, ToolArgsCompletionNode, ToolReviewNode, MemoryWriteNode
 from routers import router_after_model
 from hitl import Command
 import json
@@ -17,13 +17,21 @@ import json
 
 
 class Agent:
-    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, max_steps=5):
+    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, max_steps=10, store=None, memory_tool=None):
         self.chat_model = chat_model
         self.register = register
         self.system_prompt = system_prompt
         self.checkpointer = checkpointer
         self.tool_hitl_policy = tool_hitl_policy
         self.max_steps = max_steps
+        self.store = store
+        self.memory_tool = memory_tool
+        if self.store is not None:
+            if self.memory_tool is None:
+                raise ValueError("启用MemoryStore时必须传入memory_tool")
+            self.memory_write_node = MemoryWriteNode(self.chat_model, self.memory_tool)
+        else:
+            self.memory_write_node = None
         self.model_node = ModelNode(self.chat_model,self.register.get_tool_definitions())
         self.tool_node = ToolNode(self.register)
         self.tool_args_completion_node = ToolArgsCompletionNode(self.register, self.tool_hitl_policy)
@@ -39,10 +47,18 @@ class Agent:
         state_graph.add_edge(START, "model_node")
         state_graph.add_edge("tool_review_node", "tool_node")
         state_graph.add_edge("tool_node", "model_node")
+        if self.memory_write_node is not None:
+            state_graph.add_node("memory_write_node", self.memory_write_node)
+            state_graph.add_edge("memory_write_node", END)
         
+        if self.memory_write_node is not None:
+            finished_target = "memory_write_node"
+        else:
+            finished_target = END
+            
         model_path_map = {
                         "need_tools":"tool_args_completion_node",
-                        "finished":END
+                        "finished":finished_target
                    }
         
         state_graph.add_conditional_edges("model_node", router_after_model,model_path_map)
@@ -54,7 +70,7 @@ class Agent:
         
         state_graph.add_conditional_edges("tool_args_completion_node", self.tool_args_completion_node.router_after_toolArgsCompletionNode, tool_args_completion_path_map)
         
-        return state_graph.compile(self.checkpointer)
+        return state_graph.compile(self.checkpointer, self.store)
     
     def create_initial_state(self):
         system_message = {
@@ -68,10 +84,10 @@ class Agent:
                       }
         return agent_state
     
-    def invoke(self, user_input, agent_state, thread_id, checkpoint_id):
+    def invoke(self, user_input, agent_state, thread_id, checkpoint_id, context=None):
         
         if isinstance(user_input, Command):
-            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps)
+            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
         
         
         if user_input is not None:
@@ -84,7 +100,7 @@ class Agent:
         else:
             input_update = None
 
-        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_id, recursion_limit=self.max_steps)
+        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
 
 
         return agent_state
@@ -95,8 +111,9 @@ class Agent:
 if __name__ == "__main__":
     from model import LocalChatModel
     from tool_register import Register
-    from tools import read_resume_tool, search_project_evidence_tool
+    from tools import read_resume_tool, search_project_evidence_tool, update_user_profile_tool
     from checkpoint import JsonlCheckpointer
+    from memory import JsonlStore
 
     register = Register()
     register.register(read_resume_tool)
@@ -121,20 +138,22 @@ if __name__ == "__main__":
     }
     checkpointer = JsonlCheckpointer()
 
-    
+    store = JsonlStore()
     agent = Agent(
         chat_model= chat_model,
         register= register,
         system_prompt= system_prompt,
         checkpointer= checkpointer,
         tool_hitl_policy= tool_hitl_policy,
-        max_steps= 5,
+        max_steps= 10,
+        store= store,
+        memory_tool= update_user_profile_tool
     )
     
     user_A_agent_state = agent.create_initial_state()
     thread_id = "thread_{}".format(uuid.uuid4().hex)
     checkpoint_id = None
-
+    context = {"user_id":"user_A"}
     while True:
         user_input = input("用户: ")
         user_input = user_input.strip()
@@ -142,7 +161,7 @@ if __name__ == "__main__":
             break
         if user_input == "":
             user_input = None
-        user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_id)
+        user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_id, context=context)
         # print(user_A_agent_state)
         while "__interrupt__" in user_A_agent_state:
             interrupts = user_A_agent_state["__interrupt__"]
@@ -160,6 +179,6 @@ if __name__ == "__main__":
                 resume_value = json.loads(resume_text)
                 command_resume[interrupt.id] = resume_value
             resume_command = Command(resume=command_resume)
-            user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_id)
+            user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_id, context=context)
                 
         print("assistant: ",user_A_agent_state["messages"][-1]["content"])

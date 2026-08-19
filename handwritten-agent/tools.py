@@ -74,7 +74,44 @@ def search_project_evidence(requirement: str) -> list[dict]:
     return ret
 
 
+def update_user_profile(
+            preferred_city: str | None = None,
+            target_role: str | None = None,
+            skills: list[str] | None = None,
+            years_of_experience: int | None = None,
+            fields_to_delete: list[str] | None = None
+):
+    """
+    提取用户明确表达的长期求职信息。
+
+    Args:
+        preferred_city: 用户长期偏好的求职城市。
+        target_role: 用户长期目标岗位。
+        skills: 用户明确拥有的技能。
+        years_of_experience: 用户明确说明的工作年限。
+        fields_to_delete: 用户明确要求遗忘的字段名称。
+    """
+    profile_updates = {
+                            "preferred_city" : preferred_city,
+                            "target_role" : target_role,
+                            "skills" : skills,
+                            "years_of_experience" : years_of_experience
+                      }
     
+    if fields_to_delete is None:
+        fields_to_delete = []
+    
+    unknown_fields = set(fields_to_delete) - set(profile_updates)
+    if unknown_fields:
+        raise ValueError("不能删除未知的长期记忆字段:{}".format(unknown_fields))
+    profile_updates = {k:v for k,v in profile_updates.items() if v is not None}
+    
+    conflicting_fields = set(fields_to_delete).intersection(set(profile_updates))
+    if conflicting_fields:
+        raise ValueError("字段不能同时删除与更新: {}".format(conflicting_fields))
+        
+    ret = {"updates":profile_updates,"fields_to_delete":fields_to_delete}
+    return ret
     
     
         
@@ -84,3 +121,5 @@ def search_project_evidence(requirement: str) -> list[dict]:
 
 read_resume_tool = Tool(function=read_resume)
 search_project_evidence_tool = Tool(function=search_project_evidence)
+
+update_user_profile_tool = Tool(function=update_user_profile)
