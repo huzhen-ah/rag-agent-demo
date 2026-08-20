@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息，并以事件流暴露 Graph 的执行进度与终止结果。模型 token 级 Streaming、Subgraph 和 Multi-Agent 将在后续阶段继续扩展。
+当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息，并以事件流暴露 Graph 的执行进度与终止结果。Subgraph 和 Multi-Agent 将在后续阶段继续扩展；模型 token 级输出作为可选的展示层增强，不纳入当前手撕 Runtime 核心范围。
 
 ## 1. 当前实现范围
 
@@ -373,7 +373,7 @@ Agent.stream()
 
 `CompiledStateGraph.invoke()` 消费同一个 `stream()`，忽略中间事件并返回终止事件中的 Output。因此 `invoke()` 与 `stream()` 共用唯一的 `_run()` 执行逻辑。
 
-当前本地模型仍使用阻塞式 `model.generate()`，尚未产生 `token` 事件。因此本节实现的是 Graph 执行事件 Streaming，不是模型 token 级 Streaming。
+当前本地模型使用阻塞式 `model.generate()`，不产生 `token` 事件。本项目将 Streaming 核心边界定义为 Graph 执行事件流；模型 token 级输出主要属于推理适配与前端体验，可在后续 FastAPI 演示阶段按需接入模型 Streamer，而不影响当前 Runtime 的 Streaming 语义。
 
 ## 11. 运行方式
 
@@ -430,10 +430,10 @@ exit
 - 服务化、鉴权、配额和 Tool 沙箱。
 - 完整的自动化测试、评测和可观测性体系。
 - 向量化 Memory 检索、TTL、自动压缩、异步写入和数据库 Store。
+- 模型 token 级输出以及 SSE/WebSocket 前端传输。
 
 以下 Agent 核心能力将在下一阶段最小手写：
 
-- 模型 token 级 Streaming。
 - Subgraph。
 - Multi-Agent。
 
