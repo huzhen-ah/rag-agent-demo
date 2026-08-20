@@ -105,6 +105,25 @@ class Agent:
 
         return agent_state
 
+    def stream(self, user_input, agent_state, thread_id, checkpoint_id, context=None):
+        if isinstance(user_input, Command):
+            event_item_generator = self.compiled_graph.stream(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
+            return event_item_generator
+        
+        if user_input is not None:
+            user_message = {
+                                "id":r"msg_{}".format(uuid.uuid4().hex),
+                                "role":"user",
+                                "content":user_input
+                           }
+            input_update = {"messages":[user_message]}
+        else:
+            input_update = None
+
+        event_item_generator = self.compiled_graph.stream(agent_state, input_update, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
+
+
+        return event_item_generator
         
 
 
@@ -154,31 +173,71 @@ if __name__ == "__main__":
     thread_id = "thread_{}".format(uuid.uuid4().hex)
     checkpoint_id = None
     context = {"user_id":"user_A"}
-    while True:
-        user_input = input("用户: ")
-        user_input = user_input.strip()
-        if user_input == "exit":
-            break
-        if user_input == "":
-            user_input = None
-        user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_id, context=context)
-        # print(user_A_agent_state)
-        while "__interrupt__" in user_A_agent_state:
-            interrupts = user_A_agent_state["__interrupt__"]
-            command_resume = {}
-            for interrupt in interrupts:
-                print(
-                        "interrupt_request: ",
-                        json.dumps(
-                            interrupt.value,
-                            ensure_ascii=False,
-                            indent=2,
-                            )
-                      )
-                resume_text = input("请输入resume_value(json): ")
-                resume_value = json.loads(resume_text)
-                command_resume[interrupt.id] = resume_value
-            resume_command = Command(resume=command_resume)
-            user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_id, context=context)
-                
-        print("assistant: ",user_A_agent_state["messages"][-1]["content"])
+    
+    use_streaming = True
+    if not use_streaming:
+        while True:
+            user_input = input("用户: ")
+            user_input = user_input.strip()
+            if user_input == "exit":
+                break
+            if user_input == "":
+                user_input = None
+            user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_id, context=context)
+            # print(user_A_agent_state)
+            while "__interrupt__" in user_A_agent_state:
+                interrupts = user_A_agent_state["__interrupt__"]
+                command_resume = {}
+                for interrupt in interrupts:
+                    print(
+                            "interrupt_request: ",
+                            json.dumps(
+                                interrupt.value,
+                                ensure_ascii=False,
+                                indent=2,
+                                )
+                          )
+                    resume_text = input("请输入resume_value(json): ")
+                    resume_value = json.loads(resume_text)
+                    command_resume[interrupt.id] = resume_value
+                resume_command = Command(resume=command_resume)
+                user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_id, context=context)
+                    
+            print("assistant: ",user_A_agent_state["messages"][-1]["content"])
+    else:
+        while True:
+            user_input = input("用户: ")
+            user_input = user_input.strip()
+            if user_input == "exit":
+                break
+            if user_input == "":
+                user_input = None
+            current_input = user_input
+
+            while True:
+                event_item_generator = agent.stream(current_input,user_A_agent_state, thread_id, checkpoint_id, context=context)
+                for event_item in event_item_generator:
+                    print("event_item: ",event_item)
+                    if event_item.event_type in {"interrupt","final"}:
+                        user_A_agent_state = event_item.payload["output"]
+
+                if "__interrupt__" not in user_A_agent_state:
+                    break
+
+                interrupts = user_A_agent_state["__interrupt__"]
+                command_resume = {}
+                for interrupt in interrupts:
+                    print(
+                            "interrupt_request: ",
+                            json.dumps(
+                                interrupt.value,
+                                ensure_ascii=False,
+                                indent=2,
+                                )
+                          )
+                    resume_text = input("请输入resume_value(json): ")
+                    resume_value = json.loads(resume_text)
+                    command_resume[interrupt.id] = resume_value
+                current_input = Command(resume=command_resume)
+
+            print("assistant: ",user_A_agent_state["messages"][-1]["content"])

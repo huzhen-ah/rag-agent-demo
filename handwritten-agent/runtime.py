@@ -7,11 +7,11 @@ Created on Mon Aug  3 16:09:04 2026
 """
 
 from state import AgentState,AgentStateUpdate
-from typing import get_type_hints,get_origin,get_args,Annotated
+from typing import get_type_hints, get_origin, get_args, Annotated, Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from memory import BaseStore
-
+from streaming import StreamEvent
 
 def get_state_reducers(StateClass):
     key2reducer = {}
@@ -58,8 +58,13 @@ def apply_updates(old_state:AgentState,update_states:list[AgentStateUpdate],key2
     
 @dataclass
 class Runtime:
+    """
+    Callable是类型描述，表示接受的是一个函数，Callable[[参数类型列表]，返回值类型],
+    Callable[[StreamEvent], None]整体表示类型
+    """
     context: dict | None = None
     store: BaseStore | None = None
+    stream_writer: Callable[[StreamEvent], None] | None = None
     
 
 

@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本已经完成 **Checkpoint + HITL + Long-term Memory 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，同时使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息。Streaming、Subgraph 和 Multi-Agent 将在后续阶段基于当前 Runtime 继续扩展。
+当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息，并以事件流暴露 Graph 的执行进度与终止结果。模型 token 级 Streaming、Subgraph 和 Multi-Agent 将在后续阶段继续扩展。
 
 ## 1. 当前实现范围
 
@@ -48,6 +48,10 @@ Model 决策
 - 使用 `user_id` 构建 Memory namespace，使长期记忆跨 thread 共享并在用户之间隔离。
 - ModelNode 从 Store 读取长期记忆，只注入本次模型输入的消息副本，不写入 State。
 - MemoryWriteNode 通过专用 Tool Schema 提取长期求职信息，支持新增、覆盖和显式遗忘。
+- `StreamEvent`、同步 Queue 和 Graph 工作线程组成单次调用的事件通道。
+- `CompiledStateGraph.stream()` 输出已提交的 `update` 事件，以及 `interrupt` 或 `final` 终止事件。
+- `CompiledStateGraph.invoke()` 在内部消费同一事件流，只向调用者返回最终 Graph Output。
+- `Agent.stream()` 支持普通用户输入和 `Command.resume`，CLI 流式模式能够完成包含多次 HITL 恢复的完整生命周期。
 
 当前 Resume Agent 注册了两个 Tool：
 
@@ -110,18 +114,19 @@ State → Partial State Update
 | 文件 | 职责 |
 |---|---|
 | `state.py` | Message、ToolCall、AgentState、AgentStateUpdate 和 `add_messages` Reducer |
-| `runtime.py` | 提取 State Reducer、按照 Super-step 规则合并 Node Update，并定义向 Node 注入 context/store 的 Runtime |
-| `graph.py` | StateGraph Builder、Graph 编译、Task 调度、Transition、Router、interrupt 捕获和恢复执行循环 |
+| `runtime.py` | 提取 State Reducer、按照 Super-step 规则合并 Node Update，并定义向 Node 注入 context/store/stream_writer 的 Runtime |
+| `graph.py` | StateGraph Builder、Graph 编译、Task 调度、Transition、Router、interrupt 恢复和同步事件流 |
 | `checkpoint.py` | StateSnapshot、PendingWrite、Checkpointer 接口、内存快照与 JSONL 本地持久化 |
 | `hitl.py` | Interrupt、Command、Task、TaskContext、PregelScratchpad、ContextVar 和 `interrupt()` |
 | `memory.py` | MemoryItem、BaseStore、InMemoryStore 和 JSONL 长期记忆持久化 |
+| `streaming.py` | 定义统一的 StreamEvent 事件协议 |
 | `model.py` | Qwen3 Model Adapter、消息格式转换和 ToolCall ID 标准化 |
 | `parser.py` | 解析模型原始输出，提取 `content`、`name` 和 `arguments` |
 | `nodes.py` | ModelNode、ToolArgsCompletionNode、ToolReviewNode、ToolNode 和 MemoryWriteNode |
 | `routers.py` | 根据最新 State 决定进入 ToolNode 或结束 |
 | `tools.py` | Tool 抽象、Tool Schema、参数校验、业务 Tool 和异常协议 |
 | `tool_register.py` | Tool 注册、按名称查找以及 Tool Definition 导出 |
-| `agent.py` | 组装 Resume Agent，注入 Checkpointer/Store，并把 User Input、thread、checkpoint 和 context 交给 Runtime |
+| `agent.py` | 组装 Resume Agent，提供 invoke/stream 接口，并把 User Input、thread、checkpoint 和 context 交给 Runtime |
 
 ## 4. Message 与 ToolCall 协议
 
@@ -347,7 +352,30 @@ ModelNode 生成最终回答
 
 Memory 不写入 AgentState，因此不会随每个 Checkpoint 重复复制。当前提供进程内的 `InMemoryStore` 和追加写入的 `JsonlStore`。
 
-## 10. 运行方式
+## 10. Graph Event Streaming
+
+当前 Streaming 暴露 Graph 的执行过程，同时保留原有的同步 `invoke()` 调用方式：
+
+```text
+Agent.stream()
+→ CompiledStateGraph.stream() 创建 Queue 和 Graph 工作线程
+→ _run() 执行 Graph，并通过 Runtime.stream_writer 写入已提交的 update 事件
+→ 工作线程根据 _run() 的返回结果写入 interrupt 或 final 终止事件
+→ 调用者遍历 StreamEvent 生成器
+```
+
+事件统一使用 `StreamEvent(event_type, payload)`：
+
+- `update`：某个 Task 所在 Super-step 已成功提交，携带 `super_step`、`node_name` 和 Partial State Update。
+- `interrupt`：本次执行因 HITL 暂停，携带 Interrupt 数据和当前 Graph Output。
+- `final`：本次 Graph 正常完成，携带最终 Graph Output；当前 Agent 的 Output 是完整 State。
+- 工作线程中的异常不包装为业务事件，而是通过 Queue 交回调用线程并重新抛出。
+
+`CompiledStateGraph.invoke()` 消费同一个 `stream()`，忽略中间事件并返回终止事件中的 Output。因此 `invoke()` 与 `stream()` 共用唯一的 `_run()` 执行逻辑。
+
+当前本地模型仍使用阻塞式 `model.generate()`，尚未产生 `token` 事件。因此本节实现的是 Graph 执行事件 Streaming，不是模型 token 级 Streaming。
+
+## 11. 运行方式
 
 当前运行环境需要：
 
@@ -392,7 +420,7 @@ exit
 
 代码默认使用 `device="mps"`。没有可用 MPS 的环境需要在 `agent.py` 中改为 `device="cpu"` 或其他可用设备。
 
-## 11. 当前边界
+## 12. 当前边界
 
 当前版本有意不实现以下生产能力：
 
@@ -405,20 +433,20 @@ exit
 
 以下 Agent 核心能力将在下一阶段最小手写：
 
-- Streaming。
+- 模型 token 级 Streaming。
 - Subgraph。
 - Multi-Agent。
 
 当前 HITL 只接受结构化的 `Command(resume={interrupt_id: resume_value})`。自然语言反馈需要在调用 Runtime 前由规则或 LLM 转换为结构化 `resume_value`。`Command.update`、`Command.goto` 和 `Command.graph` 暂未实现。
 
-## 12. 设计文档
+## 13. 设计文档
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)：完整架构设计与协议说明。
 - [`HITL_DESIGN.md`](HITL_DESIGN.md)：HITL Runtime、工具补参与审核流程及当前边界。
 - [`ADVANCED_CORE_PLAN_2026-08-06.md`](ADVANCED_CORE_PLAN_2026-08-06.md)：Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent 计划。
 - [`TODAY_PLAN_2026-08-04.md`](TODAY_PLAN_2026-08-04.md)：Graph Runtime 核心实现计划。
 
-## 13. 项目定位
+## 14. 项目定位
 
 这不是生产级 Agent Framework，也不是 LangGraph 的源码复刻。
 

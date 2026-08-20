@@ -16,6 +16,11 @@ from hitl import Task, TaskContext, TaskResult, PregelScratchpad, Command, _task
 from exceptions import GraphInterrupt
 from memory import BaseStore
 import inspect
+from threading import Thread
+from queue import Queue
+from streaming import StreamEvent
+
+
 
 
 START = "__start__"
@@ -291,7 +296,82 @@ class CompiledStateGraph:
         else:
             raise RuntimeError(r"command_resume是Command的resume字段值，必须是{interrupt_id:single_resume_value}")
         
-    def invoke(self, graph_input, input_update=None, thread_id=None, checkpoint_id=None, recursion_limit=25, context=None):
+    def invoke(self, 
+             graph_input, 
+             input_update=None, 
+             thread_id=None, 
+             checkpoint_id=None, 
+             recursion_limit=25, 
+             context=None
+    ):
+        for event in self.stream(graph_input,input_update,thread_id,checkpoint_id,recursion_limit,context):
+            if event.event_type in {"interrupt","final"}:
+                return event.payload["output"]
+            
+            
+    
+    def stream(self,
+             graph_input, 
+             input_update=None, 
+             thread_id=None, 
+             checkpoint_id=None, 
+             recursion_limit=25, 
+             context=None
+    ):
+        event_queue = Queue()
+        
+        def run_graph():
+            try:
+                output = self._run(
+                                    graph_input,
+                                    input_update,
+                                    thread_id,
+                                    checkpoint_id,
+                                    recursion_limit,
+                                    context,
+                                    stream_writer=event_queue.put
+                                  )
+                if "__interrupt__" in output:
+                    event_type = "interrupt"
+                    payload = {
+                                "output" : output,
+                                "interrupts" : output["__interrupt__"]
+                              }
+                    terminal_event = StreamEvent(event_type, payload)
+                else:
+                    event_type = "final"
+                    payload = {"output" : output}
+                    terminal_event = StreamEvent(event_type, payload)
+                event_queue.put(terminal_event)
+                    
+            except BaseException as error:
+                event_queue.put(error)
+            
+
+        worker = Thread(target=run_graph)
+        worker.start()
+        while True:
+            item = event_queue.get()
+
+            if isinstance(item, BaseException):
+                raise item
+            
+            if item.event_type in {"interrupt","final"}:
+                yield item
+                break
+                
+            yield item
+            
+    
+    def _run(self, 
+             graph_input, 
+             input_update=None, 
+             thread_id=None, 
+             checkpoint_id=None, 
+             recursion_limit=25, 
+             context=None,
+             stream_writer=None
+    ):
         """
         graph_input:只有2种可能：
         1.init_state
@@ -301,7 +381,7 @@ class CompiledStateGraph:
         if thread_id is None:
             raise ValueError("必须传入thread_id")
         
-        runtime = Runtime(context=context, store=self.store)
+        runtime = Runtime(context=context, store=self.store, stream_writer=stream_writer)
         resume_command = graph_input if isinstance(graph_input, Command) else None
         
         
@@ -369,6 +449,16 @@ class CompiledStateGraph:
             if self.checkpointer and thread_id:
                 stateSnapshot = self.save_snapshot(thread_id, parent_checkpoint_id, super_step, state, executable_node_names)
                 parent_checkpoint_id = stateSnapshot.checkpoint_id
+            if runtime.stream_writer is not None:
+                for task_result in task_results:
+                    event_type = "update"
+                    payload = {
+                                    "super_step" : super_step,
+                                    "node_name" : task_result.task.node_name,
+                                    "update" : task_result.update
+                               }
+                    update_event = StreamEvent(event_type, payload)
+                    runtime.stream_writer(update_event)
         
         return state
         
