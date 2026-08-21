@@ -17,6 +17,7 @@ from hitl import Interrupt
 
 class StateSnapshot(NamedTuple):
     thread_id: str
+    checkpoint_ns: str
     checkpoint_id: str
     parent_checkpoint_id: str | None
     super_step: int
@@ -38,68 +39,74 @@ class Checkpointer(ABC):
         pass
 
     @abstractmethod
-    def get(self, thread_id: str, checkpoint_id: str | None = None) -> StateSnapshot | None:
+    def get(self, thread_id: str, checkpoint_ns:str, checkpoint_id: str | None = None) -> StateSnapshot | None:
         pass
 
     @abstractmethod
-    def list(self, thread_id: str) -> tuple[StateSnapshot, ...]:
+    def list(self, thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot, ...]:
         #同一 thread 的快照，按 created_at 从新到旧返回
         pass
 
     @abstractmethod
-    def put_writes(self,thread_id, checkpoint_id, writes) -> None:
+    def put_writes(self,thread_id, checkpoint_ns, checkpoint_id, writes) -> None:
         pass
     
     @abstractmethod
-    def get_writes(self, thread_id, checkpoint_id) -> tuple[PendingWrite, ...]:
+    def get_writes(self, thread_id, checkpoint_ns, checkpoint_id) -> tuple[PendingWrite, ...]:
         pass
     
     
 class InMemoryCheckpointer(Checkpointer):
     def __init__(self):
-        self.checkpoints: dict[str, dict[str, StateSnapshot]] = {}
-        self.checkpoint_key = tuple[str, str]
+        self.checkpoints: dict[str, dict[str, dict[str, StateSnapshot]]] = {} #{thread_id:checkpoint_ns:checkpoint_id:snapshot}
+        self.checkpoint_key = tuple[str, str, str]
         self.write_key = tuple[str, str]
         self.pending_writes: dict[self.checkpoint_key,dict[self.write_key,PendingWrite]] = {}
         
     def put(self,snapshot: StateSnapshot) -> None:
         thread_id = snapshot.thread_id
+        checkpoint_ns = snapshot.checkpoint_ns
         checkpoint_id = snapshot.checkpoint_id
         if thread_id not in self.checkpoints:
             self.checkpoints[thread_id] = {}
-        self.checkpoints[thread_id][checkpoint_id] = deepcopy(snapshot)
+        if checkpoint_ns not in self.checkpoints[thread_id]:
+            self.checkpoints[thread_id][checkpoint_ns] = {}
+        self.checkpoints[thread_id][checkpoint_ns][checkpoint_id] = deepcopy(snapshot)
 
-    def get(self,thread_id: str, checkpoint_id: str | None = None) -> StateSnapshot | None:
+    def get(self,thread_id: str, checkpoint_ns:str, checkpoint_id: str | None = None) -> StateSnapshot | None:
         if thread_id not in self.checkpoints:
             return None
+        if checkpoint_ns not in self.checkpoints[thread_id]:
+            return None
         if checkpoint_id:
-            if checkpoint_id not in self.checkpoints[thread_id]:
+            if checkpoint_id not in self.checkpoints[thread_id][checkpoint_ns]:
                 return None
-            return deepcopy(self.checkpoints[thread_id][checkpoint_id])
+            return deepcopy(self.checkpoints[thread_id][checkpoint_ns][checkpoint_id])
         else:
-            created_ats = [(cp.created_at,cp.checkpoint_id) for _,cp in self.checkpoints[thread_id].items()]
+            created_ats = [(cp.created_at,cp.checkpoint_id) for _,cp in self.checkpoints[thread_id][checkpoint_ns].items()]
             newest_checkpoint_id = sorted(created_ats,key=lambda x : x[0])[-1][1]
-            return deepcopy(self.checkpoints[thread_id][newest_checkpoint_id])
+            return deepcopy(self.checkpoints[thread_id][checkpoint_ns][newest_checkpoint_id])
 
-    def list(self,thread_id: str) -> tuple[StateSnapshot,...]:
+    def list(self,thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot,...]:
         #同一 thread 的快照，按 created_at 从新到旧返回
         if thread_id not in self.checkpoints:
             return tuple()
-
-        created_ats = [(cp.created_at,cp.checkpoint_id) for _,cp in self.checkpoints[thread_id].items()]
+        if checkpoint_ns not in self.checkpoints[thread_id]:
+            return tuple()
+        created_ats = [(cp.created_at,cp.checkpoint_id) for _,cp in self.checkpoints[thread_id][checkpoint_ns].items()]
         sorted_checkpoint_ids = [_[1] for _ in sorted(created_ats,key=lambda x : x[0],reverse=True)]
-        return tuple(deepcopy(self.checkpoints[thread_id][checkpoint_id]) for checkpoint_id in sorted_checkpoint_ids)
+        return tuple(deepcopy(self.checkpoints[thread_id][checkpoint_ns][checkpoint_id]) for checkpoint_id in sorted_checkpoint_ids)
 
-    def put_writes(self, thread_id, checkpoint_id, writes) -> None:
-        checkpoint_key = (thread_id,checkpoint_id)
+    def put_writes(self, thread_id, checkpoint_ns, checkpoint_id, writes) -> None:
+        checkpoint_key = (thread_id, checkpoint_ns, checkpoint_id)
         if checkpoint_key not in self.pending_writes:
             self.pending_writes[checkpoint_key] = {}
         for write in writes:
             write_key = (write.task_id,write.channel)
             self.pending_writes[checkpoint_key][write_key] = deepcopy(write)
             
-    def get_writes(self, thread_id, checkpoint_id) -> tuple[PendingWrite, ...]:
-        checkpoint_key = (thread_id,checkpoint_id)
+    def get_writes(self, thread_id, checkpoint_ns, checkpoint_id) -> tuple[PendingWrite, ...]:
+        checkpoint_key = (thread_id, checkpoint_ns, checkpoint_id)
         if checkpoint_key not in self.pending_writes:
             return ()
         return tuple(deepcopy(write) for write in self.pending_writes[checkpoint_key].values())
@@ -135,7 +142,7 @@ class JsonlCheckpointer(Checkpointer):
         with open(self.local_checkpoint_file,"a",encoding="utf8") as f:
             f.write(snapshot_jsonl+"\n")
 
-    def get(self,thread_id: str, checkpoint_id: str | None = None) -> StateSnapshot | None:
+    def get(self,thread_id: str, checkpoint_ns:str, checkpoint_id: str | None = None) -> StateSnapshot | None:
         ret = None
 
         with open(self.local_checkpoint_file,"r",encoding="utf8") as f:
@@ -145,14 +152,15 @@ class JsonlCheckpointer(Checkpointer):
                     break
                 snapshot = self._deserialize(line)
                 if thread_id == snapshot.thread_id:
-                    if checkpoint_id:
-                        if checkpoint_id == snapshot.checkpoint_id:
-                            return snapshot
-                    else:
-                        ret = snapshot
+                    if checkpoint_ns == snapshot.checkpoint_ns:
+                        if checkpoint_id:
+                            if checkpoint_id == snapshot.checkpoint_id:
+                                return snapshot
+                        else:
+                            ret = snapshot
         return ret
 
-    def list(self,thread_id: str) -> tuple[StateSnapshot,...]:
+    def list(self,thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot,...]:
         ret = []
         with open(self.local_checkpoint_file,"r",encoding="utf8") as f:
             for line in f:
@@ -160,13 +168,13 @@ class JsonlCheckpointer(Checkpointer):
                 if not line:
                     continue
                 snapshot = self._deserialize(line)
-                if thread_id == snapshot.thread_id:
+                if thread_id == snapshot.thread_id and checkpoint_ns == snapshot.checkpoint_ns:
                     ret.append(snapshot)
         if ret:
             ret = ret[::-1]
         return tuple(ret)
     
-    def _serialize_writes(self, thread_id, checkpoint_id, writes):
+    def _serialize_writes(self, thread_id, checkpoint_ns, checkpoint_id, writes):
         ret = []
         for write in writes:
             task_id = write.task_id
@@ -186,6 +194,7 @@ class JsonlCheckpointer(Checkpointer):
             
             data = {
                         "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
                         "checkpoint_id": checkpoint_id,
                         "task_id": task_id,
                         "channel": channel,
@@ -196,8 +205,8 @@ class JsonlCheckpointer(Checkpointer):
             ret.append(data_json+"\n")
         return ret
     
-    def put_writes(self, thread_id, checkpoint_id, writes) -> None:
-        json_writes = self._serialize_writes(thread_id, checkpoint_id, writes)
+    def put_writes(self, thread_id, checkpoint_ns, checkpoint_id, writes) -> None:
+        json_writes = self._serialize_writes(thread_id, checkpoint_ns, checkpoint_id, writes)
         with open(self.local_pending_writes_file, "a", encoding="utf8") as f:
             f.writelines(json_writes)
             
@@ -221,7 +230,7 @@ class JsonlCheckpointer(Checkpointer):
             ret.append(PendingWrite(task_id, channel, value))
         return tuple(ret)
     
-    def get_writes(self, thread_id, checkpoint_id) -> tuple[PendingWrite, ...]:
+    def get_writes(self, thread_id, checkpoint_ns, checkpoint_id) -> tuple[PendingWrite, ...]:
         writes = {}
         
         with open(self.local_pending_writes_file, "r", encoding="utf8") as f:
@@ -231,7 +240,7 @@ class JsonlCheckpointer(Checkpointer):
                     continue
                 data = json.loads(line)
                 
-                if data["thread_id"] == thread_id and data["checkpoint_id"] == checkpoint_id:
+                if data["thread_id"] == thread_id and data["checkpoint_ns"] == checkpoint_ns and data["checkpoint_id"] == checkpoint_id:
                     write_key = (data["task_id"],data["channel"])
                     writes[write_key] = data
         if not writes:

@@ -84,10 +84,10 @@ class Agent:
                       }
         return agent_state
     
-    def invoke(self, user_input, agent_state, thread_id, checkpoint_id, context=None):
+    def invoke(self, user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, context=None):
         
         if isinstance(user_input, Command):
-            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
+            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
         
         
         if user_input is not None:
@@ -100,14 +100,14 @@ class Agent:
         else:
             input_update = None
 
-        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
+        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
 
 
         return agent_state
 
-    def stream(self, user_input, agent_state, thread_id, checkpoint_id, context=None):
+    def stream(self, user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, context=None):
         if isinstance(user_input, Command):
-            event_item_generator = self.compiled_graph.stream(user_input, None, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
+            event_item_generator = self.compiled_graph.stream(user_input, None, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
             return event_item_generator
         
         if user_input is not None:
@@ -120,7 +120,7 @@ class Agent:
         else:
             input_update = None
 
-        event_item_generator = self.compiled_graph.stream(agent_state, input_update, thread_id, checkpoint_id, recursion_limit=self.max_steps, context=context)
+        event_item_generator = self.compiled_graph.stream(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
 
 
         return event_item_generator
@@ -171,6 +171,7 @@ if __name__ == "__main__":
     
     user_A_agent_state = agent.create_initial_state()
     thread_id = "thread_{}".format(uuid.uuid4().hex)
+    checkpoint_ns = ""
     checkpoint_id = None
     context = {"user_id":"user_A"}
     
@@ -183,7 +184,7 @@ if __name__ == "__main__":
                 break
             if user_input == "":
                 user_input = None
-            user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_id, context=context)
+            user_A_agent_state = agent.invoke(user_input,user_A_agent_state, thread_id, checkpoint_ns, checkpoint_id, context=context)
             # print(user_A_agent_state)
             while "__interrupt__" in user_A_agent_state:
                 interrupts = user_A_agent_state["__interrupt__"]
@@ -201,7 +202,7 @@ if __name__ == "__main__":
                     resume_value = json.loads(resume_text)
                     command_resume[interrupt.id] = resume_value
                 resume_command = Command(resume=command_resume)
-                user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_id, context=context)
+                user_A_agent_state = agent.invoke(resume_command, user_A_agent_state, thread_id, checkpoint_ns, checkpoint_id, context=context)
                     
             print("assistant: ",user_A_agent_state["messages"][-1]["content"])
     else:
@@ -215,7 +216,7 @@ if __name__ == "__main__":
             current_input = user_input
 
             while True:
-                event_item_generator = agent.stream(current_input,user_A_agent_state, thread_id, checkpoint_id, context=context)
+                event_item_generator = agent.stream(current_input,user_A_agent_state, thread_id, checkpoint_ns, checkpoint_id, context=context)
                 for event_item in event_item_generator:
                     print("event_item: ",event_item)
                     if event_item.event_type in {"interrupt","final"}:
