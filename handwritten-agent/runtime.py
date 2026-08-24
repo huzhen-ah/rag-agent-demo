@@ -9,7 +9,7 @@ Created on Mon Aug  3 16:09:04 2026
 from state import AgentState,AgentStateUpdate
 from typing import get_type_hints, get_origin, get_args, Annotated, Callable
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from memory import BaseStore
 from streaming import StreamEvent
 
@@ -65,6 +65,7 @@ class Runtime:
     context: dict | None = None
     store: BaseStore | None = None
     stream_writer: Callable[[StreamEvent], None] | None = None
+    resume_map: dict = field(default_factory=dict)
     
 
 

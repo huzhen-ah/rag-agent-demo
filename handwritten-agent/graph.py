@@ -12,14 +12,14 @@ from collections.abc import Hashable
 from checkpoint import StateSnapshot, Checkpointer, PendingWrite
 import time
 import uuid
-from hitl import Task, TaskContext, TaskResult, PregelScratchpad, Command, _task_context_var
+from hitl import Task, GraphCheckpointContext, TaskExecutionContext, TaskResult, PregelScratchpad, Command, _task_execution_context_var, create_interrupt_id
 from exceptions import GraphInterrupt
 from memory import BaseStore
 import inspect
 from threading import Thread
 from queue import Queue
 from streaming import StreamEvent
-
+from dataclasses import replace
 
 
 
@@ -177,10 +177,10 @@ class CompiledStateGraph:
     def merge_updates(self,old_state,update_states):
         return apply_updates(old_state, update_states, self.key2reducer)
 
-    def execute_task(self, task, state, checkpoint_id, resume_values=(), runtime=None):
+    def execute_task(self, task, state, graph_checkpoint, resume_values=(), runtime=None):
         scratchpad = PregelScratchpad(resume=list(resume_values))
-        task_context = TaskContext(checkpoint_id, task.task_id, scratchpad)
-        token = _task_context_var.set(task_context)
+        task_execution_context = TaskExecutionContext(graph_checkpoint, task, scratchpad)
+        token = _task_execution_context_var.set(task_execution_context)
         try:
             node = self.nodes[task.node_name]
             if "runtime" in inspect.signature(node).parameters:
@@ -196,11 +196,13 @@ class CompiledStateGraph:
             task_result = TaskResult(task=task, error=error)
             return task_result
         finally:
-            _task_context_var.reset(token)
+            _task_execution_context_var.reset(token)
         
-    def execute_tasks(self, tasks, state, thread_id, checkpoint_ns, checkpoint_id, runtime):
+    def execute_tasks(self, tasks, state, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, runtime):
+        graph_checkpoint = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
         saved_updates = {}
         saved_resumes = {}
+        saved_interrupts = {}
         pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_ns, checkpoint_id)
         for write in pending_writes:
             if write.channel == "update":
@@ -209,6 +211,9 @@ class CompiledStateGraph:
             elif write.channel == "resume":
                 task_id = write.task_id
                 saved_resumes[task_id] = write.value
+            elif write.channel == "interrupt":
+                task_id = write.task_id
+                saved_interrupts[task_id] = write.value
                 
                 
         task_results = []
@@ -217,8 +222,16 @@ class CompiledStateGraph:
                 task_result = TaskResult(task=task, update=saved_updates[task.task_id])
                 task_results.append(task_result)
                 continue
+            task_interrupts = saved_interrupts.get(task.task_id, ())
+            task_interrupt_ids = set([interrupt.id for interrupt in task_interrupts])
+            if runtime.resume_map:
+                task_resume_map = {interrupt_id : resume_value for interrupt_id,resume_value in runtime.resume_map.items() if interrupt_id in task_interrupt_ids}
+            else:
+                task_resume_map = {}
+            
+            task_runtime = replace(runtime, resume_map = task_resume_map)
             task_resume_values = saved_resumes.get(task.task_id,())
-            task_result = self.execute_task(task, state, checkpoint_id, task_resume_values, runtime)
+            task_result = self.execute_task(task, state, graph_checkpoint, task_resume_values, task_runtime)
             task_results.append(task_result)
             writes = self.task_result_to_writes(task_result)
             self.checkpointer.put_writes(thread_id, checkpoint_ns, checkpoint_id, writes)
@@ -289,6 +302,9 @@ class CompiledStateGraph:
                     task_id_2_resume_value[write.task_id] = list(write.value)
             for interrupt_id, value in command_resume.items():
                 task_id = interrupt_id_2_task_id[interrupt_id]
+                own_interrupt_id = create_interrupt_id(checkpoint_id, task_id)
+                if own_interrupt_id != interrupt_id:
+                    continue
                 if task_id not in task_id_2_resume_value:
                     task_id_2_resume_value[task_id] = []
                 task_id_2_resume_value[task_id].append(value)
@@ -304,10 +320,11 @@ class CompiledStateGraph:
              thread_id=None, 
              checkpoint_ns="",
              checkpoint_id=None, 
+             checkpoint_map=None,
              recursion_limit=25, 
              context=None
     ):
-        for event in self.stream(graph_input, input_update, thread_id, checkpoint_ns, checkpoint_id, recursion_limit, context):
+        for event in self.stream(graph_input, input_update, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit, context):
             if event.event_type in {"interrupt","final"}:
                 return event.payload["output"]
             
@@ -319,6 +336,7 @@ class CompiledStateGraph:
              thread_id=None,
              checkpoint_ns="",
              checkpoint_id=None, 
+             checkpoint_map=None,
              recursion_limit=25, 
              context=None
     ):
@@ -332,6 +350,7 @@ class CompiledStateGraph:
                                     thread_id,
                                     checkpoint_ns,
                                     checkpoint_id,
+                                    checkpoint_map,
                                     recursion_limit,
                                     context,
                                     stream_writer=event_queue.put
@@ -374,6 +393,7 @@ class CompiledStateGraph:
              thread_id=None,
              checkpoint_ns="",
              checkpoint_id=None, 
+             checkpoint_map=None,
              recursion_limit=25, 
              context=None,
              stream_writer=None
@@ -386,11 +406,22 @@ class CompiledStateGraph:
         
         if thread_id is None:
             raise ValueError("必须传入thread_id")
+        if checkpoint_map is None:
+            checkpoint_map = {}
         
-        runtime = Runtime(context=context, store=self.store, stream_writer=stream_writer)
+            
+        
         resume_command = graph_input if isinstance(graph_input, Command) else None
-        
-        
+        if resume_command is None:
+            resume_map = {}
+        else:
+            resume_map = resume_command.resume
+        runtime = Runtime(
+                            context = context, 
+                            store = self.store, 
+                            stream_writer = stream_writer,
+                            resume_map = resume_map
+                         )
         stateSnapshot = self.checkpointer.get(thread_id, checkpoint_ns, checkpoint_id)
         if resume_command is not None:
             if stateSnapshot is None:
@@ -431,7 +462,7 @@ class CompiledStateGraph:
 
             tasks = self.create_tasks(stateSnapshot.checkpoint_id, executable_node_names)
             
-            task_results = self.execute_tasks(tasks, state, thread_id, stateSnapshot.checkpoint_ns, stateSnapshot.checkpoint_id, runtime=runtime)
+            task_results = self.execute_tasks(tasks, state, thread_id, stateSnapshot.checkpoint_ns, stateSnapshot.checkpoint_id, checkpoint_map, runtime=runtime)
             
             errors = [task_result.error for task_result in task_results if task_result.error is not None]
             if len(errors) > 0:
@@ -460,6 +491,7 @@ class CompiledStateGraph:
                     event_type = "update"
                     payload = {
                                     "super_step" : super_step,
+                                    "checkpoint_ns" : checkpoint_ns,
                                     "node_name" : task_result.task.node_name,
                                     "update" : task_result.update
                                }
