@@ -54,7 +54,7 @@ class GraphCheckpointContext:
     
 @dataclass
 class TaskExecutionContext:
-    graph_checkpoint: GraphCheckpointContext
+    graph_checkpoint_context: GraphCheckpointContext
     task: Task
     scratchpad: PregelScratchpad
 
@@ -89,7 +89,7 @@ def interrupt(value):
     if interrupt_index < len(scratchpad.resume):
         return scratchpad.resume[interrupt_index]
     
-    interrupt_id = create_interrupt_id(task_execution_context.graph_checkpoint.checkpoint_id,task_execution_context.task.task_id)
+    interrupt_id = create_interrupt_id(task_execution_context.graph_checkpoint_context.checkpoint_id,task_execution_context.task.task_id)
     interrupt_data = Interrupt(value=value, id=interrupt_id)
     raise GraphInterrupt((interrupt_data,))
     
@@ -102,10 +102,10 @@ if __name__ == "__main__":
     checkpoint_ns = "checkpoint_ns"
     checkpoint_id = "checkpoint_1"
     checkpoint_map = {}
-    graph_checkpoint = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
+    graph_checkpoint_context = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
     task = Task(task_id="task_id", node_name="node_name")
     task_execution_context = TaskExecutionContext(
-        graph_checkpoint = graph_checkpoint,
+        graph_checkpoint_context = graph_checkpoint_context,
         task = task,
         scratchpad=PregelScratchpad(),
     )

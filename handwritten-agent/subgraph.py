@@ -21,10 +21,10 @@ class SubGraphNode:
         if current_task_execution_context is None:
             raise RuntimeError("SubGraphNode必须在Runtime执行Task期间调用")
             
-        graph_checkpoint = current_task_execution_context.graph_checkpoint
+        graph_checkpoint_context = current_task_execution_context.graph_checkpoint_context
         task = current_task_execution_context.task
         
-        current_checkpoint_ns = graph_checkpoint.checkpoint_ns
+        current_checkpoint_ns = graph_checkpoint_context.checkpoint_ns
         
         child_checkpoint_ns_segment = "{}:{}".format(task.node_name,task.task_id)
         
@@ -34,8 +34,8 @@ class SubGraphNode:
             child_checkpoint_ns = child_checkpoint_ns_segment
             
         child_checkpoint_map = {
-                                    **graph_checkpoint.checkpoint_map,
-                                    graph_checkpoint.checkpoint_ns : graph_checkpoint.checkpoint_id
+                                    **graph_checkpoint_context.checkpoint_map,
+                                    graph_checkpoint_context.checkpoint_ns : graph_checkpoint_context.checkpoint_id
                                }
         
         if runtime.resume_map:
@@ -45,7 +45,7 @@ class SubGraphNode:
             
         child_output = self.subgraph._run(
             graph_input = child_graph_input,
-            thread_id = graph_checkpoint.thread_id,
+            thread_id = graph_checkpoint_context.thread_id,
             checkpoint_ns = child_checkpoint_ns,
             checkpoint_map = child_checkpoint_map,
             context = runtime.context,

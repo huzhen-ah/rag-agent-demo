@@ -177,9 +177,9 @@ class CompiledStateGraph:
     def merge_updates(self,old_state,update_states):
         return apply_updates(old_state, update_states, self.key2reducer)
 
-    def execute_task(self, task, state, graph_checkpoint, resume_values=(), runtime=None):
+    def execute_task(self, task, state, graph_checkpoint_context, resume_values=(), runtime=None):
         scratchpad = PregelScratchpad(resume=list(resume_values))
-        task_execution_context = TaskExecutionContext(graph_checkpoint, task, scratchpad)
+        task_execution_context = TaskExecutionContext(graph_checkpoint_context, task, scratchpad)
         token = _task_execution_context_var.set(task_execution_context)
         try:
             node = self.nodes[task.node_name]
@@ -214,7 +214,7 @@ class CompiledStateGraph:
     
         
     def execute_tasks(self, tasks, state, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, runtime):
-        graph_checkpoint = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
+        graph_checkpoint_context = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
         saved_task_id_2_updates = {}
         saved_task_id_2_resumes = {}
         saved_task_id_2_interrupts = {}
@@ -240,7 +240,7 @@ class CompiledStateGraph:
             task_resume_map = self.extract_task_resume_map(task.task_id, saved_task_id_2_interrupts, runtime.resume_map)
             task_runtime = replace(runtime, resume_map = task_resume_map)
             task_resume_values = saved_task_id_2_resumes.get(task.task_id,())
-            task_result = self.execute_task(task, state, graph_checkpoint, task_resume_values, task_runtime)
+            task_result = self.execute_task(task, state, graph_checkpoint_context, task_resume_values, task_runtime)
             task_results.append(task_result)
             writes = self.task_result_to_writes(task_result)
             self.checkpointer.put_writes(thread_id, checkpoint_ns, checkpoint_id, writes)
