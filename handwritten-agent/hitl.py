@@ -16,17 +16,21 @@ from exceptions import GraphInterrupt
 class Interrupt:
     value: Any
     id: str
+ 
+# @dataclass
+# class Command:
+#     graph: str | None = None
+#     update: Any | None = None
+#     resume: Any | None = None#这里的resume并不是纯value，而是{interrupt_id:resume_value}
+#     goto: Any = ()
     
 @dataclass
 class Command:
-    graph: str | None = None
-    update: Any | None = None
-    resume: Any | None = None
-    goto: Any = ()
-    
+    resume: Any | None = None#这里的resume并不是纯value，而是{interrupt_id:resume_value}
+
 @dataclass
 class PregelScratchpad:
-    resume: list[Any] = field(default_factory=list)
+    resume: list[Any] = field(default_factory=list)#这里的resume是一个list，里面的item才是真正的Command.resume中的resume_value
     _interrupt_index: int = 0
     
     def interrupt_counter(self):

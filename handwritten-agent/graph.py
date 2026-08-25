@@ -436,8 +436,6 @@ class CompiledStateGraph:
                 raise RuntimeError("Command.resume必须依附已有checkpoint")
             if input_update is not None:
                 raise RuntimeError("恢复中断时不能同时传入input_update")
-            if resume_command.update is not None or resume_command.graph is not None or resume_command.goto:
-                raise RuntimeError("目前只支持Command.resume")
         if stateSnapshot:
             parent_checkpoint_id = stateSnapshot.checkpoint_id
             state = stateSnapshot.state
