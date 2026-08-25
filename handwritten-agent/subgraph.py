@@ -24,37 +24,37 @@ class SubGraphNode:
         graph_checkpoint_context = current_task_execution_context.graph_checkpoint_context
         task = current_task_execution_context.task
         
-        current_checkpoint_ns = graph_checkpoint_context.checkpoint_ns
+        checkpoint_ns = graph_checkpoint_context.checkpoint_ns
         
-        child_checkpoint_ns_segment = "{}:{}".format(task.node_name,task.task_id)
+        task_checkpoint_ns_segment = "{}:{}".format(task.node_name,task.task_id)
         
-        if current_checkpoint_ns:
-            child_checkpoint_ns = "{}|{}".format(current_checkpoint_ns,child_checkpoint_ns_segment)
+        if checkpoint_ns:
+            task_checkpoint_ns = "{}|{}".format(checkpoint_ns,task_checkpoint_ns_segment)
         else:
-            child_checkpoint_ns = child_checkpoint_ns_segment
+            task_checkpoint_ns = task_checkpoint_ns_segment
             
-        child_checkpoint_map = {
-                                    **graph_checkpoint_context.checkpoint_map,
-                                    graph_checkpoint_context.checkpoint_ns : graph_checkpoint_context.checkpoint_id
-                               }
+        checkpoint_map = {
+                                **graph_checkpoint_context.checkpoint_map,
+                                graph_checkpoint_context.checkpoint_ns : graph_checkpoint_context.checkpoint_id
+                         }
         
         if runtime.resume_map:
-            child_graph_input = Command(resume = runtime.resume_map)
+            graph_input = Command(resume = runtime.resume_map)
         else:
-            child_graph_input = self.input_mapper(parent_state)
+            graph_input = self.input_mapper(parent_state)
             
-        child_output = self.subgraph._run(
-            graph_input = child_graph_input,
+        output = self.subgraph._run(
+            graph_input = graph_input,
             thread_id = graph_checkpoint_context.thread_id,
-            checkpoint_ns = child_checkpoint_ns,
-            checkpoint_map = child_checkpoint_map,
+            checkpoint_ns = task_checkpoint_ns,
+            checkpoint_map = checkpoint_map,
             context = runtime.context,
             stream_writer = runtime.stream_writer
         )
         
-        if "__interrupt__" in child_output:
-            raise GraphInterrupt(child_output["__interrupt__"])
-        parent_update = self.output_mapper(parent_state, child_output)
+        if "__interrupt__" in output:
+            raise GraphInterrupt(output["__interrupt__"])
+        parent_update = self.output_mapper(parent_state, output)
         return parent_update
             
         
