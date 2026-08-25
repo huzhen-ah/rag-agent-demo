@@ -48,7 +48,7 @@ class SubGraphNode:
             thread_id = graph_checkpoint_context.thread_id,
             checkpoint_ns = task_checkpoint_ns,
             checkpoint_map = checkpoint_map,
-            context = runtime.context,
+            context = runtime.context,#当前其实就是存储个user_id,用于memory。
             stream_writer = runtime.stream_writer
         )
         
