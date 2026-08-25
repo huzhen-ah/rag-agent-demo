@@ -187,13 +187,13 @@ class CompiledStateGraph:
                 update = node(state, runtime=runtime)
             else:
                 update = node(state)
-            task_result = TaskResult(task=task, update=update)
+            task_result = TaskResult(task=task, channel="update",value=update)
             return task_result
         except GraphInterrupt as error:
-            task_result = TaskResult(task=task, interrupts=error.args[0])
+            task_result = TaskResult(task=task, channel="interrupt", value=error.args[0])
             return task_result
         except Exception as error:
-            task_result = TaskResult(task=task, error=error)
+            task_result = TaskResult(task=task, channel="error", value=error)
             return task_result
         finally:
             _task_execution_context_var.reset(token)
@@ -234,7 +234,7 @@ class CompiledStateGraph:
         task_results = []
         for task in tasks:
             if task.task_id in saved_task_id_2_updates:
-                task_result = TaskResult(task=task, update=saved_task_id_2_updates[task.task_id])
+                task_result = TaskResult(task=task, channel="update",value=saved_task_id_2_updates[task.task_id])
                 task_results.append(task_result)
                 continue
             task_resume_map = self.extract_task_resume_map(task.task_id, saved_task_id_2_interrupts, runtime.resume_map)
@@ -248,16 +248,12 @@ class CompiledStateGraph:
     
     def task_result_to_writes(self, task_result):
         task_id = task_result.task.task_id
-        if task_result.update is not None:
-            return (PendingWrite(task_id, "update", task_result.update),)
+        channel = task_result.channel
+        if channel not in {"update", "interrupt", "error"}:
+            raise RuntimeError("channel 必须是update|interrupt|error")
+        value = task_result.value
+        return (PendingWrite(task_id, channel, value), )
         
-        if task_result.interrupts:
-            return (PendingWrite(task_id, "interrupt", task_result.interrupts),)
-        
-        if task_result.error is not None:
-            return (PendingWrite(task_id, "error", task_result.error),)
-        
-        raise RuntimeError("channel 必须是update|interrupts|error")
         
     def save_snapshot(
             self,
@@ -470,17 +466,18 @@ class CompiledStateGraph:
             
             task_results = self.execute_tasks(tasks, state, thread_id, stateSnapshot.checkpoint_ns, stateSnapshot.checkpoint_id, checkpoint_map, runtime=runtime)
             
-            errors = [task_result.error for task_result in task_results if task_result.error is not None]
+            errors = [task_result.value for task_result in task_results if task_result.channel == "error"]
             if len(errors) > 0:
                 raise errors[0]
+            
                 
-            interrupts = tuple(interrupt for task_result in task_results for interrupt in task_result.interrupts)
+            interrupts = tuple(interrupt for task_result in task_results if task_result.channel=="interrupt" for interrupt in task_result.value)
             if interrupts:
                 output = dict(state)
                 output["__interrupt__"] = interrupts
                 return output
             
-            update_states = [task_result.update for task_result in task_results]
+            update_states = [task_result.value for task_result in task_results if task_result.channel=="update"]
             state = self.merge_updates(state, update_states)
             
             active_node_names = set()
@@ -494,15 +491,16 @@ class CompiledStateGraph:
                 parent_checkpoint_id = stateSnapshot.checkpoint_id
             if runtime.stream_writer is not None:
                 for task_result in task_results:
-                    event_type = "update"
-                    payload = {
-                                    "super_step" : super_step,
-                                    "checkpoint_ns" : checkpoint_ns,
-                                    "node_name" : task_result.task.node_name,
-                                    "update" : task_result.update
-                               }
-                    update_event = StreamEvent(event_type, payload)
-                    runtime.stream_writer(update_event)
+                    if task_result.channel == "update":
+                        event_type = "update"
+                        payload = {
+                                        "super_step" : super_step,
+                                        "checkpoint_ns" : checkpoint_ns,
+                                        "node_name" : task_result.task.node_name,
+                                        "update" : task_result.value
+                                   }
+                        update_event = StreamEvent(event_type, payload)
+                        runtime.stream_writer(update_event)
         
         return state
         

@@ -59,12 +59,19 @@ class TaskExecutionContext:
     scratchpad: PregelScratchpad
 
 
+# @dataclass
+# class TaskResult:
+#     task: Task
+#     update: Any | None = None
+#     interrupts: tuple[Interrupt,...] = ()
+#     error: Exception | None = None
+    
+    
 @dataclass
 class TaskResult:
     task: Task
-    update: Any | None = None
-    interrupts: tuple[Interrupt,...] = ()
-    error: Exception | None = None
+    channel: str#目前只能是update,interrupt,error
+    value: Any
     
     
 _task_execution_context_var = ContextVar(
