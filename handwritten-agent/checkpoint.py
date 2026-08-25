@@ -43,7 +43,7 @@ class Checkpointer(ABC):
         pass
 
     @abstractmethod
-    def list(self, thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot, ...]:
+    def list_snapshots(self, thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot, ...]:
         #同一 thread 的快照，按 created_at 从新到旧返回
         pass
 
@@ -87,7 +87,7 @@ class InMemoryCheckpointer(Checkpointer):
             newest_checkpoint_id = sorted(created_ats,key=lambda x : x[0])[-1][1]
             return deepcopy(self.checkpoints[thread_id][checkpoint_ns][newest_checkpoint_id])
 
-    def list(self,thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot,...]:
+    def list_snapshots(self,thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot,...]:
         #同一 thread 的快照，按 created_at 从新到旧返回
         if thread_id not in self.checkpoints:
             return tuple()
@@ -160,7 +160,7 @@ class JsonlCheckpointer(Checkpointer):
                             ret = snapshot
         return ret
 
-    def list(self,thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot,...]:
+    def list_snapshots(self,thread_id: str, checkpoint_ns:str) -> tuple[StateSnapshot,...]:
         ret = []
         with open(self.local_checkpoint_file,"r",encoding="utf8") as f:
             for line in f:
