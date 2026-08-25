@@ -197,40 +197,49 @@ class CompiledStateGraph:
             return task_result
         finally:
             _task_execution_context_var.reset(token)
+      
+    def is_interrupt_from_task(self, interrupt_id, checkpoint_id, task_id):
+        tmp_interrupt_id = create_interrupt_id(checkpoint_id, task_id)
+        return interrupt_id == tmp_interrupt_id
+    
+    def extract_task_resume_map(self, task_id, saved_task_id_2_interrupts, resume_map):
+        if not resume_map:
+            return {}
+        if task_id not in saved_task_id_2_interrupts:
+            return {}
+        task_interrupts = saved_task_id_2_interrupts[task_id]
+        task_interrupt_ids = set([interrupt.id for interrupt in task_interrupts])
+        task_resume_map = {interrupt_id : resume_value for interrupt_id, resume_value in resume_map.items() if interrupt_id in task_interrupt_ids}
+        return task_resume_map
+    
         
     def execute_tasks(self, tasks, state, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, runtime):
         graph_checkpoint = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
-        saved_updates = {}
-        saved_resumes = {}
-        saved_interrupts = {}
+        saved_task_id_2_updates = {}
+        saved_task_id_2_resumes = {}
+        saved_task_id_2_interrupts = {}
         pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_ns, checkpoint_id)
         for write in pending_writes:
             if write.channel == "update":
                 task_id = write.task_id
-                saved_updates[task_id] = write.value
+                saved_task_id_2_updates[task_id] = write.value
             elif write.channel == "resume":
                 task_id = write.task_id
-                saved_resumes[task_id] = write.value
+                saved_task_id_2_resumes[task_id] = write.value
             elif write.channel == "interrupt":
                 task_id = write.task_id
-                saved_interrupts[task_id] = write.value
+                saved_task_id_2_interrupts[task_id] = write.value
                 
                 
         task_results = []
         for task in tasks:
-            if task.task_id in saved_updates:
-                task_result = TaskResult(task=task, update=saved_updates[task.task_id])
+            if task.task_id in saved_task_id_2_updates:
+                task_result = TaskResult(task=task, update=saved_task_id_2_updates[task.task_id])
                 task_results.append(task_result)
                 continue
-            task_interrupts = saved_interrupts.get(task.task_id, ())
-            task_interrupt_ids = set([interrupt.id for interrupt in task_interrupts])
-            if runtime.resume_map:
-                task_resume_map = {interrupt_id : resume_value for interrupt_id,resume_value in runtime.resume_map.items() if interrupt_id in task_interrupt_ids}
-            else:
-                task_resume_map = {}
-            
+            task_resume_map = self.extract_task_resume_map(task.task_id, saved_task_id_2_interrupts, runtime.resume_map)
             task_runtime = replace(runtime, resume_map = task_resume_map)
-            task_resume_values = saved_resumes.get(task.task_id,())
+            task_resume_values = saved_task_id_2_resumes.get(task.task_id,())
             task_result = self.execute_task(task, state, graph_checkpoint, task_resume_values, task_runtime)
             task_results.append(task_result)
             writes = self.task_result_to_writes(task_result)
@@ -302,8 +311,7 @@ class CompiledStateGraph:
                     task_id_2_resume_value[write.task_id] = list(write.value)
             for interrupt_id, value in command_resume.items():
                 task_id = interrupt_id_2_task_id[interrupt_id]
-                own_interrupt_id = create_interrupt_id(checkpoint_id, task_id)
-                if own_interrupt_id != interrupt_id:
+                if not self.is_interrupt_from_task(interrupt_id, checkpoint_id, task_id):
                     continue
                 if task_id not in task_id_2_resume_value:
                     task_id_2_resume_value[task_id] = []
