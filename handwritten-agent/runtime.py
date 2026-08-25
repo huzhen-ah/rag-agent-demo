@@ -63,7 +63,7 @@ class Runtime:
     Callable[[StreamEvent], None]整体表示类型
     """
     context: dict | None = None
-    store: BaseStore | None = None
+    memory_store: BaseStore | None = None
     stream_writer: Callable[[StreamEvent], None] | None = None
     resume_map: dict = field(default_factory=dict)
     

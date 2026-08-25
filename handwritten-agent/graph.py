@@ -122,7 +122,7 @@ class StateGraph:
         return reached_nodes
         
         
-    def compile(self, checkpointer: Checkpointer, store: BaseStore = None):
+    def compile(self, checkpointer: Checkpointer, memory_store: BaseStore = None):
         if START not in self.fixed_edges and START not in self.conditional_edges:
             raise ValueError("START必须至少存在于fixed_edges和conditional_edges中的一个，其实只能存在于一个")
         overlapping_sources = set(self.fixed_edges).intersection(set(self.conditional_edges))
@@ -160,15 +160,15 @@ class StateGraph:
         if unreached_nodes:
             raise ValueError("从START开始，存在未到达的nodes:{}".format(unreached_nodes))
 
-        return CompiledStateGraph(self.state_schema, nodes, transitions, checkpointer, store)
+        return CompiledStateGraph(self.state_schema, nodes, transitions, checkpointer, memory_store)
     
 class CompiledStateGraph:
-    def __init__(self, state_schema, nodes, transitions, checkpointer=None, store=None):
+    def __init__(self, state_schema, nodes, transitions, checkpointer=None, memory_store=None):
         self.state_schema = state_schema
         self.nodes = nodes
         self.transitions = transitions
         self.checkpointer = checkpointer
-        self.store = store
+        self.memory_store = memory_store
         self.key2reducer = get_state_reducers(state_schema)
         
     def get_created_at(self):
@@ -426,7 +426,7 @@ class CompiledStateGraph:
             resume_map = resume_command.resume
         runtime = Runtime(
                             context = context, 
-                            store = self.store, 
+                            memory_store = self.memory_store, 
                             stream_writer = stream_writer,
                             resume_map = resume_map
                          )

@@ -20,12 +20,12 @@ class ModelNode:
     def __call__(self,state:AgentState, runtime=None)->AgentStateUpdate:
         messages = deepcopy(state["messages"])
         
-        if runtime is not None and runtime.store is not None:
+        if runtime is not None and runtime.memory_store is not None:
             if runtime.context is None or "user_id" not in runtime.context:
                 raise ValueError("使用MemoryStore时，必须在context中提供user_id")
             user_id = runtime.context["user_id"]
             namespace = (user_id, "memories")
-            memory_items = runtime.store.search(namespace)
+            memory_items = runtime.memory_store.search(namespace)
             if memory_items:
                 memories = [{"key":item.key,"value":item.value} for item in memory_items]
                 memory_content = json.dumps(memories, ensure_ascii=False)
@@ -330,7 +330,7 @@ class MemoryWriteNode:
                                 }
         
     def __call__(self, state, runtime=None):
-        if runtime is None or runtime.store is None:
+        if runtime is None or runtime.memory_store is None:
             return {}
         
         if runtime.context is None or "user_id" not in runtime.context:
@@ -348,7 +348,7 @@ class MemoryWriteNode:
         namespace = (user_id, "memories")
         key = "profile"
         
-        profile_item = runtime.store.get(namespace, key)
+        profile_item = runtime.memory_store.get(namespace, key)
         
         if profile_item is None:
             existing_profile = {}
@@ -392,9 +392,9 @@ class MemoryWriteNode:
         if fields_to_delete:
             merged_profiles = {k:v for k,v in merged_profiles.items() if k not in fields_to_delete}
         if not merged_profiles:
-            runtime.store.delete(namespace, key)
+            runtime.memory_store.delete(namespace, key)
         else:
-            runtime.store.put(namespace, key, merged_profiles)
+            runtime.memory_store.put(namespace, key, merged_profiles)
         return {"model_call_count":1}
             
             

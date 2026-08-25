@@ -17,16 +17,16 @@ import json
 
 
 class Agent:
-    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, max_steps=10, store=None, memory_tool=None):
+    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, max_steps=10, memory_store=None, memory_tool=None):
         self.chat_model = chat_model
         self.register = register
         self.system_prompt = system_prompt
         self.checkpointer = checkpointer
         self.tool_hitl_policy = tool_hitl_policy
         self.max_steps = max_steps
-        self.store = store
+        self.memory_store = memory_store
         self.memory_tool = memory_tool
-        if self.store is not None:
+        if self.memory_store is not None:
             if self.memory_tool is None:
                 raise ValueError("启用MemoryStore时必须传入memory_tool")
             self.memory_write_node = MemoryWriteNode(self.chat_model, self.memory_tool)
@@ -70,7 +70,7 @@ class Agent:
         
         state_graph.add_conditional_edges("tool_args_completion_node", self.tool_args_completion_node.router_after_toolArgsCompletionNode, tool_args_completion_path_map)
         
-        return state_graph.compile(self.checkpointer, self.store)
+        return state_graph.compile(self.checkpointer, self.memory_store)
     
     def create_initial_state(self):
         system_message = {
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     }
     checkpointer = JsonlCheckpointer()
 
-    store = JsonlStore()
+    memory_store = JsonlStore()
     agent = Agent(
         chat_model= chat_model,
         register= register,
@@ -165,7 +165,7 @@ if __name__ == "__main__":
         checkpointer= checkpointer,
         tool_hitl_policy= tool_hitl_policy,
         max_steps= 10,
-        store= store,
+        memory_store= memory_store,
         memory_tool= update_user_profile_tool
     )
     
