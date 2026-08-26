@@ -14,12 +14,12 @@ class SubGraphNode:
         self.input_mapper = input_mapper
         self.output_mapper = output_mapper
         
-    def __call__(self, parent_state, runtime):
+    def __call__(self, parent_state, node_runtime):
         
         current_task_execution_context = _task_execution_context_var.get()
         
         if current_task_execution_context is None:
-            raise RuntimeError("SubGraphNode必须在Runtime执行Task期间调用")
+            raise RuntimeError("SubGraphNode必须在CompiledStateGraph执行Task期间调用")
             
         graph_checkpoint_context = current_task_execution_context.graph_checkpoint_context
         task = current_task_execution_context.task
@@ -38,8 +38,8 @@ class SubGraphNode:
                                 graph_checkpoint_context.checkpoint_ns : graph_checkpoint_context.checkpoint_id
                          }
         
-        if runtime.resume_map:
-            graph_input = Command(resume = runtime.resume_map)
+        if node_runtime.resume_map:
+            graph_input = Command(resume = node_runtime.resume_map)
         else:
             graph_input = self.input_mapper(parent_state)
             
@@ -48,8 +48,8 @@ class SubGraphNode:
             thread_id = graph_checkpoint_context.thread_id,
             checkpoint_ns = task_checkpoint_ns,
             checkpoint_map = checkpoint_map,
-            context = runtime.context,#当前其实就是存储个user_id,用于memory。
-            stream_writer = runtime.stream_writer
+            context = node_runtime.context,#当前其实就是存储个user_id,用于memory。
+            stream_writer = node_runtime.stream_writer
         )
         
         if "__interrupt__" in output:

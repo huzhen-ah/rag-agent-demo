@@ -57,7 +57,7 @@ def apply_updates(old_state:AgentState,update_states:list[AgentStateUpdate],key2
     
     
 @dataclass
-class Runtime:
+class NodeRuntime:
     """
     Callable是类型描述，表示接受的是一个函数，Callable[[参数类型列表]，返回值类型],
     Callable[[StreamEvent], None]整体表示类型

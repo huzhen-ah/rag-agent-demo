@@ -17,15 +17,15 @@ class ModelNode:
         self.chat_model = chat_model
         self.tool_definitions = tool_definitions
     
-    def __call__(self,state:AgentState, runtime=None)->AgentStateUpdate:
+    def __call__(self,state:AgentState, node_runtime=None)->AgentStateUpdate:
         messages = deepcopy(state["messages"])
         
-        if runtime is not None and runtime.memory_store is not None:
-            if runtime.context is None or "user_id" not in runtime.context:
+        if node_runtime is not None and node_runtime.memory_store is not None:
+            if node_runtime.context is None or "user_id" not in node_runtime.context:
                 raise ValueError("使用MemoryStore时，必须在context中提供user_id")
-            user_id = runtime.context["user_id"]
+            user_id = node_runtime.context["user_id"]
             namespace = (user_id, "memories")
-            memory_items = runtime.memory_store.search(namespace)
+            memory_items = node_runtime.memory_store.search(namespace)
             if memory_items:
                 memories = [{"key":item.key,"value":item.value} for item in memory_items]
                 memory_content = json.dumps(memories, ensure_ascii=False)
@@ -329,11 +329,11 @@ class MemoryWriteNode:
                                     )
                                 }
         
-    def __call__(self, state, runtime=None):
-        if runtime is None or runtime.memory_store is None:
+    def __call__(self, state, node_runtime=None):
+        if node_runtime is None or node_runtime.memory_store is None:
             return {}
         
-        if runtime.context is None or "user_id" not in runtime.context:
+        if node_runtime.context is None or "user_id" not in node_runtime.context:
             raise ValueError("使用MemoryStore时，必须在context中提供user_id")
         
         latest_user_message = None
@@ -344,11 +344,11 @@ class MemoryWriteNode:
         if latest_user_message is None:
             return {}
         
-        user_id = runtime.context["user_id"]
+        user_id = node_runtime.context["user_id"]
         namespace = (user_id, "memories")
         key = "profile"
         
-        profile_item = runtime.memory_store.get(namespace, key)
+        profile_item = node_runtime.memory_store.get(namespace, key)
         
         if profile_item is None:
             existing_profile = {}
@@ -392,9 +392,9 @@ class MemoryWriteNode:
         if fields_to_delete:
             merged_profiles = {k:v for k,v in merged_profiles.items() if k not in fields_to_delete}
         if not merged_profiles:
-            runtime.memory_store.delete(namespace, key)
+            node_runtime.memory_store.delete(namespace, key)
         else:
-            runtime.memory_store.put(namespace, key, merged_profiles)
+            node_runtime.memory_store.put(namespace, key, merged_profiles)
         return {"model_call_count":1}
             
             
