@@ -19,7 +19,7 @@ import inspect
 from threading import Thread
 from queue import Queue
 from streaming import StreamEvent
-from dataclasses import replace
+
 
 
 
@@ -241,18 +241,20 @@ class CompiledStateGraph:
         tmp_interrupt_id = create_interrupt_id(checkpoint_id, task_id)
         return interrupt_id == tmp_interrupt_id
     
-    def extract_task_resume_map(self, task_id, saved_task_id_2_interrupts, resume_map):
-        if not resume_map:
-            return {}
-        if task_id not in saved_task_id_2_interrupts:
-            return {}
-        task_interrupts = saved_task_id_2_interrupts[task_id]
-        task_interrupt_ids = set([interrupt.id for interrupt in task_interrupts])
-        task_resume_map = {interrupt_id : resume_value for interrupt_id, resume_value in resume_map.items() if interrupt_id in task_interrupt_ids}
-        return task_resume_map
-    
         
-    def execute_tasks(self, tasks, state, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, node_runtime):
+    def execute_tasks(
+            self, 
+            tasks, 
+            state, 
+            thread_id, 
+            checkpoint_ns, 
+            checkpoint_id, 
+            checkpoint_map, 
+            context, 
+            memory_store,
+            stream_writer,
+            forward_task_id_2_interrupt_resume_map
+    ):
         graph_checkpoint_context = GraphCheckpointContext(thread_id, checkpoint_ns, checkpoint_id, checkpoint_map)
         saved_task_id_2_updates = {}
         saved_task_id_2_resumes = {}
@@ -276,8 +278,14 @@ class CompiledStateGraph:
                 task_result = TaskResult(task=task, channel="update",value=saved_task_id_2_updates[task.task_id])
                 task_results.append(task_result)
                 continue
-            task_resume_map = self.extract_task_resume_map(task.task_id, saved_task_id_2_interrupts, node_runtime.resume_map)
-            task_node_runtime = replace(node_runtime, resume_map = task_resume_map)
+            task_forward_resume_map = forward_task_id_2_interrupt_resume_map.get(task.task_id, {})
+            task_node_runtime = NodeRuntime(
+                                context = context, 
+                                memory_store = memory_store, 
+                                stream_writer = stream_writer,
+                                resume_map = task_forward_resume_map
+                             )
+            
             task_resume_values = saved_task_id_2_resumes.get(task.task_id,())
             task_result = self.execute_task(task, state, graph_checkpoint_context, task_resume_values, task_node_runtime)
             task_results.append(task_result)
@@ -326,7 +334,7 @@ class CompiledStateGraph:
             tasks.append(Task(task_id, node_name))
         return tuple(tasks)
     
-    def save_resume_value(self, thread_id, checkpoint_ns, checkpoint_id, command_resume):
+    def save_and_route_resume_values(self, thread_id, checkpoint_ns, checkpoint_id, command_resume):
         pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_ns, checkpoint_id)
         interrupt_writes = [write for write in pending_writes if write.channel == "interrupt"]
         resume_writes = [write for write in pending_writes if write.channel == "resume"]
@@ -343,19 +351,24 @@ class CompiledStateGraph:
             task_id_2_resume_value = {}
             for write in resume_writes:
                 task_id_2_resume_value[write.task_id] = list(write.value)
+            forward_task_id_2_interrupt_resume_map = {}
             for interrupt_id, value in command_resume.items():
                 task_id = interrupt_id_2_task_id[interrupt_id]
+                #基于writes记录来看，这个interrupt_id应该是对应的这个task_id,
                 if not self.is_interrupt_created_by_task(interrupt_id, checkpoint_id, task_id):
+                    # 说明这个 Interrupt 不是当前 Task 直接创建的，而是当前 SubGraphNode Task 承载的，因此继续向子图转发
+                    if task_id not in forward_task_id_2_interrupt_resume_map:
+                        forward_task_id_2_interrupt_resume_map[task_id] = {}
+                    forward_task_id_2_interrupt_resume_map[task_id][interrupt_id] = value
                     continue
-                    #基于writes记录来看，这个interrupt_id应该是对应的这个task_id,
-                    #但是如果基于这个task_id不能生成这个interrupt_id，就说明不是当前task的interrupt，就跳过。
-                    
+                   
+                
                 if task_id not in task_id_2_resume_value:
                     task_id_2_resume_value[task_id] = []
                 task_id_2_resume_value[task_id].append(value)
             writes = tuple(PendingWrite(task_id, "resume", value) for task_id, value in task_id_2_resume_value.items())
             self.checkpointer.put_writes(thread_id, checkpoint_ns, checkpoint_id, writes)
-        
+            return forward_task_id_2_interrupt_resume_map
         else:
             raise RuntimeError(r"command_resume是Command的resume字段值，必须是{interrupt_id:single_resume_value}")
         
@@ -457,16 +470,8 @@ class CompiledStateGraph:
             
         
         resume_command = graph_input if isinstance(graph_input, Command) else None
-        if resume_command is None:
-            resume_map = {}
-        else:
-            resume_map = resume_command.resume#{interrupt_id : resume_value}
-        node_runtime = NodeRuntime(
-                            context = context, 
-                            memory_store = self.memory_store, 
-                            stream_writer = stream_writer,
-                            resume_map = resume_map
-                         )
+        
+        
         stateSnapshot = self.checkpointer.get(thread_id, checkpoint_ns, checkpoint_id)
         if resume_command is not None:
             if stateSnapshot is None:
@@ -503,9 +508,12 @@ class CompiledStateGraph:
         if resume_command is not None:
             #这里是比较奇葩的地方，它的interrupt反馈不是传进去的，是写到一个地方，然后另一段代码从那个地方拿出来的
             #所以如果发现有interrupt反馈，就要把这个反馈先保存起来。这里的保存，不是说直接放到制定地方，让对方拿，仅仅是先保存。
-            #这里只是尝试保存当前层的resume_value。如果不是当前层的，就跳过了。在save_resume_value方法里跳过了
+            #当前层直接创建的 resume 保存为 PendingWrite；不是当前层直接创建的则返回并继续向子图转发
             #那不是当前层的，怎么办呢？？隐藏的代码来了：通过resume_map传给node_runtime。。。subgraphnode通过node_runtime拿到resume_value,包装成command继续传给子图
-            self.save_resume_value(thread_id, stateSnapshot.checkpoint_ns, stateSnapshot.checkpoint_id, resume_command.resume)
+            forward_task_id_2_interrupt_resume_map = self.save_and_route_resume_values(thread_id, stateSnapshot.checkpoint_ns, stateSnapshot.checkpoint_id, resume_command.resume)
+        else:
+            forward_task_id_2_interrupt_resume_map = {}
+        
         while executable_node_names:
             
             if super_step >= recursion_limit:
@@ -520,7 +528,10 @@ class CompiledStateGraph:
                                                 stateSnapshot.checkpoint_ns, 
                                                 stateSnapshot.checkpoint_id, 
                                                 checkpoint_map, 
-                                                node_runtime=node_runtime
+                                                context = context,
+                                                memory_store = self.memory_store,
+                                                stream_writer = stream_writer,
+                                                forward_task_id_2_interrupt_resume_map = forward_task_id_2_interrupt_resume_map
                                               )
             
             errors = [task_result.value for task_result in task_results if task_result.channel == "error"]
@@ -546,7 +557,7 @@ class CompiledStateGraph:
             if self.checkpointer and thread_id:
                 stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, super_step, state, executable_node_names)
                 parent_checkpoint_id = stateSnapshot.checkpoint_id
-            if node_runtime.stream_writer is not None:
+            if stream_writer is not None:
                 for task_result in task_results:
                     if task_result.channel == "update":
                         event_type = "update"
@@ -557,7 +568,7 @@ class CompiledStateGraph:
                                         "update" : task_result.value
                                    }
                         update_event = StreamEvent(event_type, payload)
-                        node_runtime.stream_writer(update_event)
+                        stream_writer(update_event)
         
         return state
         

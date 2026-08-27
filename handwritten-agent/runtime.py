@@ -59,13 +59,14 @@ def apply_updates(old_state:AgentState,update_states:list[AgentStateUpdate],key2
 @dataclass
 class NodeRuntime:
     """
+    人、流、记、续
     Callable是类型描述，表示接受的是一个函数，Callable[[参数类型列表]，返回值类型],
     Callable[[StreamEvent], None]整体表示类型
     """
-    context: dict | None = None
-    memory_store: BaseStore | None = None
-    stream_writer: Callable[[StreamEvent], None] | None = None
-    resume_map: dict = field(default_factory=dict)
+    context: dict | None = None#上下文，其实就是{user_id:someone}
+    memory_store: BaseStore | None = None#记忆类
+    stream_writer: Callable[[StreamEvent], None] | None = None#事件流方法
+    resume_map: dict = field(default_factory=dict)#resume_map = {interrupt_id:resume_value}，当前SubGraphNode需要继续向子图转发的{interrupt_id: resume_value}
     
 
 
