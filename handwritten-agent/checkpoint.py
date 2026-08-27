@@ -15,7 +15,7 @@ import os
 from hitl import Interrupt
 
 
-class StateSnapshot(NamedTuple):
+class StateSnapshot(NamedTuple):#一个checkpoint要保存的东西
     thread_id: str
     checkpoint_ns: str
     checkpoint_id: str
@@ -27,7 +27,7 @@ class StateSnapshot(NamedTuple):
 
 
 @dataclass(frozen=True)
-class PendingWrite:
+class PendingWrite:#挂起任务要保存的东西
     task_id: str
     channel: Literal["update", "interrupt", "error", "resume"]
     value: Any

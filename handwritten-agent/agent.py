@@ -169,13 +169,20 @@ if __name__ == "__main__":
         memory_tool= update_user_profile_tool
     )
     
+    """
+        user_id：用户，谁
+        thread_id：具体会话，哪次会话
+        checkpoint_ns：会话里的具体哪张图
+        checkpoint_id：这张图的具体哪个状态版本，即哪个super-step结束之后的statesnapshot
+        write_key: (task_id, channel) 这个checkpoint版本下面哪条任务写入,用task_id & channel来唯一write
+    """
     user_A_agent_state = agent.create_initial_state()
     thread_id = "thread_{}".format(uuid.uuid4().hex)
     checkpoint_ns = ""
     checkpoint_id = None
     context = {"user_id":"user_A"}
     
-    use_streaming = True
+    use_streaming = False
     if not use_streaming:
         while True:
             user_input = input("用户: ")

@@ -44,5 +44,5 @@ if __name__ == "__main__":
     requirement = "熟练掌握RAG,Milvus"
     kwargs = {"requirement":requirement}
     print(register.get("search_project_evidence").run(kwargs))
-    print(register.get_tool_definitions())
+    print("definitions: ",register.get_tool_definitions()[0])
     

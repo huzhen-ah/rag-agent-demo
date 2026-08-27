@@ -39,12 +39,12 @@ class PregelScratchpad:
         return current_index
  
 @dataclass(frozen=True)
-class Task:
+class Task:#任务类，其实就是一个身份，任务id：task_id， 任务用的node名字:node_name
     task_id: str
     node_name: str
     
 @dataclass(frozen=True)
-class GraphCheckpointContext:
+class GraphCheckpointContext:#运行时上下文
     thread_id: str
     checkpoint_ns: str
     checkpoint_id: str
@@ -53,7 +53,7 @@ class GraphCheckpointContext:
 
     
 @dataclass
-class TaskExecutionContext:
+class TaskExecutionContext:#任务执行时上下文
     graph_checkpoint_context: GraphCheckpointContext
     task: Task
     scratchpad: PregelScratchpad
@@ -80,6 +80,9 @@ _task_execution_context_var = ContextVar(
 )
     
 def create_interrupt_id(checkpoint_id, task_id):
+    """
+    interrupt_id生成函数，保证只要输入相同，生成就唯一。
+    """
     interrupt_id = uuid.uuid5(
             namespace = uuid.NAMESPACE_OID, 
             name = "{}_{}".format(checkpoint_id, task_id)
@@ -87,6 +90,12 @@ def create_interrupt_id(checkpoint_id, task_id):
     return interrupt_id
 
 def interrupt(value):
+    """
+    interrupt这个函数有意思，它即可以索取又可以提供。
+    第一次执行到这个里的时候，它就是报GraphInterrupt异常，让用户提供信息。
+    第二次执行到这里的时候，用户已经提供信息了，它就拿到这个信息返回，继续执行。
+    为了保证第一次与第二次能对应上，所以要用同一个interrupt_id,create_interrupt_id就是保证生成的interrupt_id唯一。
+    """
     task_execution_context = _task_execution_context_var.get()
     if task_execution_context is None:
         raise RuntimeError("interrupt 必须在Runtime执行Task期间调用")
@@ -119,8 +128,8 @@ if __name__ == "__main__":
     
     token = _task_execution_context_var.set(task_execution_context)
     print("token: ",token)
-    print(_task_execution_context_var.get())  # 得到 task_execution_context
+    print(": ",_task_execution_context_var.get())  # 得到 task_execution_context
     
     _task_execution_context_var.reset(token)
     
-    print(_task_execution_context_var.get())  # 得到 None
+    print(": ",_task_execution_context_var.get())  # 得到 None
