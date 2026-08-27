@@ -26,6 +26,45 @@ from dataclasses import replace
 START = "__start__"
 END = "__end__"
 
+class FixedTransition:
+    def __init__(self,targets):
+        self.targets = targets #某个source对应的targets
+        
+    def resolve_targets(self,state):
+        return self.targets
+    
+class ConditionalTransition:
+    def __init__(self,router,node_names,path_map=None):
+        self.router = router
+        self.node_names = node_names
+        self.path_map = path_map
+        
+    def resolve_targets(self,state):
+        router_result = self.router(state)
+        if isinstance(router_result, (list,tuple)):
+            router_results = router_result
+        else:
+            router_results = [router_result]
+            
+        for router_result in router_results:
+            if not isinstance(router_result, Hashable):
+                raise TypeError("Router返回的每个router_result必须是Hashable")
+        
+        
+        if self.path_map is None:
+            for router_result in router_results:
+                if not isinstance(router_result, str):
+                    raise TypeError("当path_map是None的时候，返回值类型必须是str")
+                if router_result not in self.node_names and router_result != END:
+                    raise ValueError("当path_map是None的时候,返回值必须是node_name or END")
+            return set(router_results)
+        
+        for router_result in router_results:
+            if router_result not in self.path_map:
+                raise ValueError("Router返回了不存在于path_map中的key:{}".format(router_result))
+        return {self.path_map[router_result] for router_result in router_results}
+        
+    
 
 class StateGraph:
     def __init__(self,state_schema):
@@ -198,7 +237,7 @@ class CompiledStateGraph:
         finally:
             _task_execution_context_var.reset(token)
       
-    def is_interrupt_from_task(self, interrupt_id, checkpoint_id, task_id):
+    def is_interrupt_created_by_task(self, interrupt_id, checkpoint_id, task_id):
         tmp_interrupt_id = create_interrupt_id(checkpoint_id, task_id)
         return interrupt_id == tmp_interrupt_id
     
@@ -290,7 +329,7 @@ class CompiledStateGraph:
     def save_resume_value(self, thread_id, checkpoint_ns, checkpoint_id, command_resume):
         pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_ns, checkpoint_id)
         interrupt_writes = [write for write in pending_writes if write.channel == "interrupt"]
-        
+        resume_writes = [write for write in pending_writes if write.channel == "resume"]
         if isinstance(command_resume, dict):#多个interrrupt同时更新来了
             interrupt_id_2_task_id = {}
             for write in interrupt_writes:
@@ -300,15 +339,17 @@ class CompiledStateGraph:
                     interrupt_id_2_task_id[interrupt_id] = task_id
             unknown_interrupt_ids = set(command_resume) - set(interrupt_id_2_task_id)
             if unknown_interrupt_ids:
-                raise RuntimeError("不存在对应中断的interrupt_ids: {}".format(unknown_interrupt_ids))
+                raise RuntimeError("提供的以下interrupt_ids不是这次interrupt需要的: {}".format(unknown_interrupt_ids))
             task_id_2_resume_value = {}
-            for write in pending_writes:
-                if write.channel == "resume":
-                    task_id_2_resume_value[write.task_id] = list(write.value)
+            for write in resume_writes:
+                task_id_2_resume_value[write.task_id] = list(write.value)
             for interrupt_id, value in command_resume.items():
                 task_id = interrupt_id_2_task_id[interrupt_id]
-                if not self.is_interrupt_from_task(interrupt_id, checkpoint_id, task_id):
+                if not self.is_interrupt_created_by_task(interrupt_id, checkpoint_id, task_id):
                     continue
+                    #基于writes记录来看，这个interrupt_id应该是对应的这个task_id,
+                    #但是如果基于这个task_id不能生成这个interrupt_id，就说明不是当前task的interrupt，就跳过。
+                    
                 if task_id not in task_id_2_resume_value:
                     task_id_2_resume_value[task_id] = []
                 task_id_2_resume_value[task_id].append(value)
@@ -419,7 +460,7 @@ class CompiledStateGraph:
         if resume_command is None:
             resume_map = {}
         else:
-            resume_map = resume_command.resume
+            resume_map = resume_command.resume#{interrupt_id : resume_value}
         node_runtime = NodeRuntime(
                             context = context, 
                             memory_store = self.memory_store, 
@@ -432,6 +473,10 @@ class CompiledStateGraph:
                 raise RuntimeError("Command.resume必须依附已有checkpoint")
             if input_update is not None:
                 raise RuntimeError("恢复中断时不能同时传入input_update")
+        #每轮tasks开始之前都要保存一个checkpoint,后面的pendding,memory，hitl之类的要用
+        #如果开始的时候没有拿到checkpoint，就生成一个保存
+        #如果有用户输入，就把用户输入更新到state，保存checkpoint.
+        #如果能拿到历史checkpoint且无用户输入，那就不用保存新的checkpoint
         if stateSnapshot:
             parent_checkpoint_id = stateSnapshot.checkpoint_id
             state = stateSnapshot.state
@@ -456,6 +501,10 @@ class CompiledStateGraph:
 
         parent_checkpoint_id = stateSnapshot.checkpoint_id
         if resume_command is not None:
+            #这里是比较奇葩的地方，它的interrupt反馈不是传进去的，是写到一个地方，然后另一段代码从那个地方拿出来的
+            #所以如果发现有interrupt反馈，就要把这个反馈先保存起来。这里的保存，不是说直接放到制定地方，让对方拿，仅仅是先保存。
+            #这里只是尝试保存当前层的resume_value。如果不是当前层的，就跳过了。在save_resume_value方法里跳过了
+            #那不是当前层的，怎么办呢？？隐藏的代码来了：通过resume_map传给node_runtime。。。subgraphnode通过node_runtime拿到resume_value,包装成command继续传给子图
             self.save_resume_value(thread_id, stateSnapshot.checkpoint_ns, stateSnapshot.checkpoint_id, resume_command.resume)
         while executable_node_names:
             
@@ -514,44 +563,7 @@ class CompiledStateGraph:
         
         
         
-class FixedTransition:
-    def __init__(self,targets):
-        self.targets = targets #某个source对应的targets
-        
-    def resolve_targets(self,state):
-        return self.targets
-    
-class ConditionalTransition:
-    def __init__(self,router,node_names,path_map=None):
-        self.router = router
-        self.node_names = node_names
-        self.path_map = path_map
-        
-    def resolve_targets(self,state):
-        router_result = self.router(state)
-        if isinstance(router_result, (list,tuple)):
-            router_results = router_result
-        else:
-            router_results = [router_result]
-            
-        for router_result in router_results:
-            if not isinstance(router_result, Hashable):
-                raise TypeError("Router返回的每个router_result必须是Hashable")
-        
-        
-        if self.path_map is None:
-            for router_result in router_results:
-                if not isinstance(router_result, str):
-                    raise TypeError("当path_map是None的时候，返回值类型必须是str")
-                if router_result not in self.node_names and router_result != END:
-                    raise ValueError("当path_map是None的时候,返回值必须是node_name or END")
-            return set(router_results)
-        
-        for router_result in router_results:
-            if router_result not in self.path_map:
-                raise ValueError("Router返回了不存在于path_map中的key:{}".format(router_result))
-        return {self.path_map[router_result] for router_result in router_results}
-        
+
         
 
 if __name__ == "__main__":
