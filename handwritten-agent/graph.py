@@ -12,7 +12,7 @@ from collections.abc import Hashable
 from checkpoint import StateSnapshot, Checkpointer, PendingWrite
 import time
 import uuid
-from hitl import Task, GraphCheckpointContext, TaskExecutionContext, TaskResult, PregelScratchpad, Command, _task_execution_context_var, create_interrupt_id
+from hitl import Task, Send, GraphCheckpointContext, TaskExecutionContext, TaskResult, PregelScratchpad, Command, _task_execution_context_var, create_interrupt_id
 from exceptions import GraphInterrupt
 from memory import BaseStore
 import inspect
@@ -28,7 +28,7 @@ END = "__end__"
 
 class FixedTransition:
     def __init__(self,targets):
-        self.targets = targets #某个source对应的targets
+        self.targets = sorted(targets) #某个source对应的targets
         
     def resolve_targets(self,state):
         return self.targets
@@ -46,23 +46,30 @@ class ConditionalTransition:
         else:
             router_results = [router_result]
             
+        targets = []
         for router_result in router_results:
+            if isinstance(router_result, Send):
+                if router_result.node not in self.node_names:
+                    raise ValueError("Send指向了未注册的Node: {}".format(router_result.node))
+                targets.append(router_result)
+                continue
             if not isinstance(router_result, Hashable):
-                raise TypeError("Router返回的每个router_result必须是Hashable")
+                raise TypeError("Router返回的普通路由router_result必须是Hashable")
         
         
-        if self.path_map is None:
-            for router_result in router_results:
+            if self.path_map is None:
+
                 if not isinstance(router_result, str):
                     raise TypeError("当path_map是None的时候，返回值类型必须是str")
                 if router_result not in self.node_names and router_result != END:
                     raise ValueError("当path_map是None的时候,返回值必须是node_name or END")
-            return set(router_results)
-        
-        for router_result in router_results:
-            if router_result not in self.path_map:
-                raise ValueError("Router返回了不存在于path_map中的key:{}".format(router_result))
-        return {self.path_map[router_result] for router_result in router_results}
+                target = router_result
+            else:
+                if router_result not in self.path_map:
+                    raise ValueError("Router返回了不存在于path_map中的key:{}".format(router_result))
+                target = self.path_map[router_result]
+            targets.append(target)
+        return targets
         
     
 
@@ -216,16 +223,27 @@ class CompiledStateGraph:
     def merge_updates(self,old_state,update_states):
         return apply_updates(old_state, update_states, self.key2reducer)
 
-    def execute_task(self, task, state, graph_checkpoint_context, resume_values=(), node_runtime=None):
+    def split_targets(self, targets):
+        pending_pull_node_names = []
+        pending_sends = []
+        for target in targets:
+            if isinstance(target, Send):
+                pending_sends.append(target)
+            elif target != END:
+                pending_pull_node_names.append(target)
+        pending_pull_node_names = sorted(set(pending_pull_node_names))
+        return pending_pull_node_names, pending_sends
+
+    def execute_task(self, task, graph_checkpoint_context, resume_values=(), node_runtime=None):
         scratchpad = PregelScratchpad(resume=list(resume_values))
         task_execution_context = TaskExecutionContext(graph_checkpoint_context, task, scratchpad)
         token = _task_execution_context_var.set(task_execution_context)
         try:
             node = self.nodes[task.node_name]
             if "node_runtime" in inspect.signature(node).parameters:
-                update = node(state, node_runtime=node_runtime)
+                update = node(task.input, node_runtime=node_runtime)
             else:
-                update = node(state)
+                update = node(task.input)
             task_result = TaskResult(task=task, channel="update",value=update)
             return task_result
         except GraphInterrupt as error:
@@ -244,8 +262,7 @@ class CompiledStateGraph:
         
     def execute_tasks(
             self, 
-            tasks, 
-            state, 
+            tasks,
             thread_id, 
             checkpoint_ns, 
             checkpoint_id, 
@@ -287,7 +304,7 @@ class CompiledStateGraph:
                              )
             
             task_resume_values = saved_task_id_2_resumes.get(task.task_id,())
-            task_result = self.execute_task(task, state, graph_checkpoint_context, task_resume_values, task_node_runtime)
+            task_result = self.execute_task(task, graph_checkpoint_context, task_resume_values, task_node_runtime)
             task_results.append(task_result)
             writes = self.task_result_to_writes(task_result)
             self.checkpointer.put_writes(thread_id, checkpoint_ns, checkpoint_id, writes)
@@ -309,7 +326,8 @@ class CompiledStateGraph:
             parent_checkpoint_id,
             super_step,
             state,
-            next_node_names
+            pending_pull_node_names,
+            pending_sends
     ):
         checkpoint_id = r"checkpoint_{}".format(uuid.uuid4().hex)
         stateSnapshot_dict = {
@@ -319,20 +337,26 @@ class CompiledStateGraph:
                                 "parent_checkpoint_id": parent_checkpoint_id,
                                 "super_step": super_step,
                                 "state": state,
-                                "next_node_names": tuple(next_node_names),
+                                "pending_pull_node_names": pending_pull_node_names,
+                                "pending_sends": pending_sends,
                                 "created_at": self.get_created_at()
                              }
         stateSnapshot = StateSnapshot(**stateSnapshot_dict)
         self.checkpointer.put(stateSnapshot)
         return stateSnapshot
     
-    def create_tasks(self, checkpoint_id, node_names):
+    def create_tasks(self, checkpoint_id, state, pending_pull_node_names, pending_sends):
         tasks = []
-        for task_index, node_name in enumerate(sorted(node_names)):
-            task_id = "{}:{}:{}".format(checkpoint_id, task_index, node_name)
-            task_id = str(uuid.uuid5(namespace=uuid.NAMESPACE_OID, name=task_id))
-            tasks.append(Task(task_id, node_name))
-        return tuple(tasks)
+        for node_name in pending_pull_node_names:
+            task_identity = "{}:pull:{}".format(checkpoint_id, node_name)
+            task_id = str(uuid.uuid5(namespace=uuid.NAMESPACE_OID, name=task_identity))
+            tasks.append(Task(task_id, node_name, state))
+
+        for send_index, send in enumerate(pending_sends):
+            task_identity = "{}:push:{}:{}".format(checkpoint_id, send_index, send.node)
+            task_id = str(uuid.uuid5(namespace=uuid.NAMESPACE_OID, name=task_identity))
+            tasks.append(Task(task_id, send.node, send.arg))
+        return tasks
     
     def save_and_route_resume_values(self, thread_id, checkpoint_ns, checkpoint_id, command_resume):
         pending_writes = self.checkpointer.get_writes(thread_id, checkpoint_ns, checkpoint_id)
@@ -488,10 +512,12 @@ class CompiledStateGraph:
             if input_update is not None:
                 state = self.merge_updates(state, [input_update])
                 start_transition = self.transitions[START]
-                executable_node_names = start_transition.resolve_targets(state) - {END}
-                stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, stateSnapshot.super_step, state, tuple(executable_node_names))
+                targets = start_transition.resolve_targets(state)
+                pending_pull_node_names, pending_sends = self.split_targets(targets)
+                stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, stateSnapshot.super_step, state, pending_pull_node_names, pending_sends)
             else:
-                executable_node_names = set(stateSnapshot.next_node_names)
+                pending_pull_node_names = stateSnapshot.pending_pull_node_names
+                pending_sends = stateSnapshot.pending_sends
             super_step = stateSnapshot.super_step
             recursion_limit += super_step
         else:
@@ -500,9 +526,10 @@ class CompiledStateGraph:
             if input_update is not None:
                 state = self.merge_updates(state, [input_update])
             start_transition = self.transitions[START]
-            executable_node_names = start_transition.resolve_targets(state) - {END}
+            targets = start_transition.resolve_targets(state)
+            pending_pull_node_names, pending_sends = self.split_targets(targets)
             super_step = 0
-            stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, super_step, state, tuple(executable_node_names))
+            stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, super_step, state, pending_pull_node_names, pending_sends)
 
         parent_checkpoint_id = stateSnapshot.checkpoint_id
         if resume_command is not None:
@@ -514,16 +541,15 @@ class CompiledStateGraph:
         else:
             forward_task_id_2_interrupt_resume_map = {}
         
-        while executable_node_names:
+        while pending_pull_node_names or pending_sends:
             
             if super_step >= recursion_limit:
                 raise RuntimeError("Graph 超过最大super-step步数:{}".format(recursion_limit))
 
-            tasks = self.create_tasks(stateSnapshot.checkpoint_id, executable_node_names)
+            tasks = self.create_tasks(stateSnapshot.checkpoint_id, state, pending_pull_node_names, pending_sends)
             
             task_results = self.execute_tasks(
                                                 tasks, 
-                                                state, 
                                                 thread_id, 
                                                 stateSnapshot.checkpoint_ns, 
                                                 stateSnapshot.checkpoint_id, 
@@ -548,14 +574,16 @@ class CompiledStateGraph:
             update_states = [task_result.value for task_result in task_results if task_result.channel=="update"]
             state = self.merge_updates(state, update_states)
             
-            active_node_names = set()
-            for node_name in executable_node_names:
+            active_node_names = sorted(set([task.node_name for task in tasks]))#这里用set的意思是：举个例子，所有toolcall汇总结果之后，只需要调用一次modelnode来分析汇总之后的信息
+            targets = []
+            for node_name in active_node_names:
                 if node_name in self.transitions:
-                    active_node_names.update(self.transitions[node_name].resolve_targets(state))
-            executable_node_names = active_node_names - {END}
+                    targets.extend(self.transitions[node_name].resolve_targets(state))
+            pending_pull_node_names, pending_sends = self.split_targets(targets)
+
             super_step += 1
             if self.checkpointer and thread_id:
-                stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, super_step, state, executable_node_names)
+                stateSnapshot = self.save_snapshot(thread_id, checkpoint_ns, parent_checkpoint_id, super_step, state, pending_pull_node_names, pending_sends)
                 parent_checkpoint_id = stateSnapshot.checkpoint_id
             if stream_writer is not None:
                 for task_result in task_results:

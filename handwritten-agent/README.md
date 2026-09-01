@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息，并以事件流暴露 Graph 的执行进度与终止结果。Subgraph 和 Multi-Agent 将在后续阶段继续扩展；模型 token 级输出作为可选的展示层增强，不纳入当前手撕 Runtime 核心范围。
+当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming + Subgraph + Multi-Agent 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息，以事件流暴露 Graph 执行过程，并支持带独立 Checkpoint namespace 的嵌套图与 `agent_as_tool` 多 Agent 协作。模型 token 级输出作为可选的展示层增强，不纳入当前手撕 Runtime 核心范围。
 
 ## 1. 当前实现范围
 
@@ -35,10 +35,10 @@ Model 决策
 - Graph 编译期结构校验与 Node 可达性校验。
 - `StateSnapshot`、`Checkpointer`、`InMemoryCheckpointer` 和本地 `JsonlCheckpointer`。
 - 使用 `thread_id` 隔离会话，使用 UUID `checkpoint_id` 和 `parent_checkpoint_id` 维护快照血缘。
-- Super-step 成功提交后保存 `state + next_node_names`，支持从最新或指定 Checkpoint 恢复。
-- 新 UserMessage 从历史 State 重新经过 `START`；没有新 Input Update 时从 `next_node_names` 继续。
+- Super-step 成功提交后保存 `state + pending_pull_node_names + pending_sends`，支持从最新或指定 Checkpoint 恢复。
+- 新 UserMessage 从历史 State 重新经过 `START`；没有新 Input Update 时从 Snapshot 中保存的待执行 PULL/PUSH Tasks 继续。
 - JSONL 落盘与进程重启恢复，一个 Agent 实例可以服务多个独立 thread。
-- `Task`、`TaskResult`、`TaskContext`、`PregelScratchpad` 和基于 `ContextVar` 的 Task 执行上下文。
+- `Task`、`TaskResult`、`TaskExecutionContext`、`PregelScratchpad` 和基于 `ContextVar` 的 Task 执行上下文。
 - `interrupt(value)`、`Interrupt`、`GraphInterrupt` 和 `Command.resume`。
 - task-level pending writes：保存 `update`、`interrupt`、`error` 和 `resume`。
 - Super-step 中部分 Task 中断时不提交 State；恢复时复用已经完成的兄弟 Task，只重跑尚未完成的 Task。
@@ -52,6 +52,13 @@ Model 决策
 - `CompiledStateGraph.stream()` 输出已提交的 `update` 事件，以及 `interrupt` 或 `final` 终止事件。
 - `CompiledStateGraph.invoke()` 在内部消费同一事件流，只向调用者返回最终 Graph Output。
 - `Agent.stream()` 支持普通用户输入和 `Command.resume`，CLI 流式模式能够完成包含多次 HITL 恢复的完整生命周期。
+- Router 可以返回普通 Node 目标或 `Send(node, arg)`；Runtime 分别创建读取完整 State 的 PULL Task 和读取独立 `Send.arg` 的 PUSH Task。
+- 每个 ToolCall 通过一个 `Send("tool_node", tool_call)` 形成独立 PUSH Task；同一 Super-step 的 Tool Updates 统一提交后，只进入一次后续 ModelNode。
+- `SubGraphNode` 将 Compiled Graph 作为普通 Node 嵌入父图，通过 input/output mapper 完成父子 State 协议转换。
+- 每层图使用独立 `checkpoint_ns`，并通过 `checkpoint_map` 保存祖先 Checkpoint 地址；嵌套图支持 Checkpoint、HITL、Memory 和 Streaming 继续向下工作。
+- Multi-Agent 采用 `agent_as_tool`：`TaskTool` 根据 `subagent_type` 选择 `CompiledSubAgent`，调用子 Agent，并把最终 Assistant 内容返回为父 Agent 的 Tool 结果。
+- 子 Agent 的 Interrupt 可以穿过 Tool 层冒泡到调用者，`Command.resume` 再按 Task 和 namespace 路由回真正产生 Interrupt 的子图。
+- 已验证同一轮生成多个 `task` ToolCalls、多个子 Agent Task 分别中断与恢复、结果汇合后由 Supervisor 统一总结。
 
 当前 Resume Agent 注册了两个 Tool：
 
@@ -63,11 +70,11 @@ Model 决策
 ```text
 User Input
     ↓
-Agent.invoke(user_input, agent_state, thread_id, checkpoint_id, context)
+Agent.invoke(user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, context)
     ↓
 构造包含 UserMessage 的 input_update
     ↓
-CompiledStateGraph.invoke(state, input_update, thread_id, checkpoint_id)
+CompiledStateGraph.invoke(state, input_update, thread_id, checkpoint_ns, checkpoint_id)
     ↓
 按 thread_id 读取最新或指定 StateSnapshot
     ↓
@@ -85,13 +92,17 @@ START → ModelNode
                               ├── 仍缺少必需参数 → interrupt → 恢复后重新检查
                               └── 参数完整 → ToolReviewNode
                                                    ├── 需要审核 → interrupt → approve/edit/reject
-                                                   └── 无需审核或审核完成 → ToolNode
-                                                                                 ↓
-                                                                       参数校验与 Tool 执行
-                                                                                 ↓
-                                                                            ToolMessage
-                                                                                 ↓
-                                                                              ModelNode
+                                                   └── 无需审核或审核完成
+                                                               ↓
+                                                    每个 ToolCall 生成一个 Send
+                                                               ↓
+                                                    多个 ToolNode PUSH Tasks
+                                                               ↓
+                                                    参数校验与 Tool/TaskTool 执行
+                                                               ↓
+                                                    ToolMessages 统一提交
+                                                               ↓
+                                                         一个 ModelNode
 ```
 
 每个 Graph Super-step 遵循：
@@ -117,9 +128,12 @@ State → Partial State Update
 | `runtime.py` | 提取 State Reducer、按照 Super-step 规则合并 Node Update，并定义向 Node 注入 context/store/stream_writer 的 Runtime |
 | `graph.py` | StateGraph Builder、Graph 编译、Task 调度、Transition、Router、interrupt 恢复和同步事件流 |
 | `checkpoint.py` | StateSnapshot、PendingWrite、Checkpointer 接口、内存快照与 JSONL 本地持久化 |
-| `hitl.py` | Interrupt、Command、Task、TaskContext、PregelScratchpad、ContextVar 和 `interrupt()` |
+| `hitl.py` | Interrupt、Command、Send、Task、TaskExecutionContext、PregelScratchpad、ContextVar 和 `interrupt()` |
 | `memory.py` | MemoryItem、BaseStore、InMemoryStore 和 JSONL 长期记忆持久化 |
 | `streaming.py` | 定义统一的 StreamEvent 事件协议 |
+| `subgraph.py` | SubGraphNode、嵌套 Checkpoint namespace、父子 State 映射与跨层 Interrupt |
+| `multi_agent.py` | CompiledSubAgent 元数据、统一 TaskTool、子 Agent 调用与结果转换 |
+| `multi_agent_demo.py` | Supervisor + Resume Agent 的 `agent_as_tool` 组装与多 Task/HITL 演示 |
 | `model.py` | Qwen3 Model Adapter、消息格式转换和 ToolCall ID 标准化 |
 | `parser.py` | 解析模型原始输出，提取 `content`、`name` 和 `arguments` |
 | `nodes.py` | ModelNode、ToolArgsCompletionNode、ToolReviewNode、ToolNode 和 MemoryWriteNode |
@@ -284,17 +298,19 @@ Checkpoint 开启后，每次调用必须提供 `thread_id`。Runtime 先查询�
 → 使用Snapshot.state，忽略传入的initial_state
 ```
 
-若本次存在新的 `input_update`，Runtime 将其合并到 State 并从 `START` 开始新一轮执行；若 `input_update=None`，Runtime 直接从 Snapshot 的 `next_node_names` 恢复，不重复执行已经完成的 Node。
+若本次存在新的 `input_update`，Runtime 将其合并到 State 并从 `START` 开始新一轮执行；若 `input_update=None`，Runtime 直接从 Snapshot 的 `pending_pull_node_names` 和 `pending_sends` 恢复，不重复执行已经完成的 Task。
 
 每个成功提交的 Super-step 生成一个 Snapshot：
 
 ```text
 thread_id
+checkpoint_ns
 checkpoint_id
 parent_checkpoint_id
 super_step
 state
-next_node_names
+pending_pull_node_names
+pending_sends
 created_at
 ```
 
@@ -375,7 +391,46 @@ Agent.stream()
 
 当前本地模型使用阻塞式 `model.generate()`，不产生 `token` 事件。本项目将 Streaming 核心边界定义为 Graph 执行事件流；模型 token 级输出主要属于推理适配与前端体验，可在后续 FastAPI 演示阶段按需接入模型 Streamer，而不影响当前 Runtime 的 Streaming 语义。
 
-## 11. 运行方式
+## 11. Subgraph
+
+`SubGraphNode` 把一个已经编译的 Graph 适配成父图中的普通 Node：
+
+```text
+Parent State
+→ input_mapper
+→ Child Graph
+→ output_mapper
+→ Parent State Update
+```
+
+子图不是父图 State 的简单函数调用。每次 SubGraphNode Task 都生成独立的 namespace segment：
+
+```text
+{node_name}:{task_id}
+```
+
+它与父图的 `checkpoint_ns` 拼接后形成子图地址；`checkpoint_map` 保存从根图到直接父图的祖先 Checkpoint 地址。每层图都维护自己的 Snapshot 和 pending writes，因此深层 Interrupt 恢复时只需要重建未完成的嵌套 Task，不需要从最外层重新执行全部工作。父图通过 NodeRuntime 把 `context`、`stream_writer` 和尚未由本层消费的 `resume_map` 继续传给子图。
+
+## 12. Multi-Agent
+
+当前 Multi-Agent 使用与 DeepAgents 主流实现一致的 `agent_as_tool` 形态：
+
+```text
+Supervisor ModelNode
+→ task(description, subagent_type) ToolCall
+→ ToolNode PUSH Task
+→ TaskTool 选择 CompiledSubAgent
+→ 子 Agent CompiledStateGraph
+→ 子 Agent 最终 Assistant 内容
+→ 父图 ToolMessage
+→ Supervisor ModelNode
+```
+
+`CompiledSubAgent` 保存子 Agent 的名称、用途描述和可执行 Agent；`TaskTool` 向 Supervisor 暴露统一的 `task` Tool Schema。Supervisor 不直接看到子 Agent 内部的普通 Tools，只根据 `subagent_type` 委派完整任务。子 Agent 仍拥有自己的 Model、Tools、Graph 和 HITL policy。
+
+同一轮的多个独立 `task` ToolCalls 会形成多个 PUSH Tasks。它们读取各自的 ToolCall 输入，拥有不同的 Task ID 和子图 namespace；全部完成后，多个 ToolMessage 在同一个 Super-step 中统一合并，再只调度一次 Supervisor ModelNode。当前 Runtime 保留这种并行执行语义，但底层 Python 循环仍顺序调用各 Task，不实现线程池、进程池或分布式并发。
+
+## 13. 运行方式
 
 当前运行环境需要：
 
@@ -410,6 +465,12 @@ models/Qwen3-4B
 python agent.py
 ```
 
+运行 Multi-Agent 演示：
+
+```bash
+python multi_agent_demo.py
+```
+
 输入：
 
 ```text
@@ -420,7 +481,7 @@ exit
 
 代码默认使用 `device="mps"`。没有可用 MPS 的环境需要在 `agent.py` 中改为 `device="cpu"` 或其他可用设备。
 
-## 12. 当前边界
+## 14. 当前边界
 
 当前版本有意不实现以下生产能力：
 
@@ -431,22 +492,19 @@ exit
 - 完整的自动化测试、评测和可观测性体系。
 - 向量化 Memory 检索、TTL、自动压缩、异步写入和数据库 Store。
 - 模型 token 级输出以及 SSE/WebSocket 前端传输。
-
-以下 Agent 核心能力将在下一阶段最小手写：
-
-- Subgraph。
-- Multi-Agent。
+- PULL/PUSH Tasks 目前顺序执行，只实现同一 Super-step 的并行状态语义，不提供真实并发调度。
+- Multi-Agent 当前实现统一 `task` Tool、静态子 Agent 注册和最终文本返回，不实现动态创建 Agent、远程 Agent 或跨进程协作。
 
 当前 HITL 只接受结构化的 `Command(resume={interrupt_id: resume_value})`。自然语言反馈需要在调用 Runtime 前由规则或 LLM 转换为结构化 `resume_value`。`Command.update`、`Command.goto` 和 `Command.graph` 暂未实现。
 
-## 13. 设计文档
+## 15. 设计文档
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md)：完整架构设计与协议说明。
 - [`HITL_DESIGN.md`](HITL_DESIGN.md)：HITL Runtime、工具补参与审核流程及当前边界。
 - [`ADVANCED_CORE_PLAN_2026-08-06.md`](ADVANCED_CORE_PLAN_2026-08-06.md)：Checkpoint、HITL、Memory、Streaming、Subgraph 和 Multi-Agent 计划。
 - [`TODAY_PLAN_2026-08-04.md`](TODAY_PLAN_2026-08-04.md)：Graph Runtime 核心实现计划。
 
-## 14. 项目定位
+## 16. 项目定位
 
 这不是生产级 Agent Framework，也不是 LangGraph 的源码复刻。
 
@@ -466,6 +524,9 @@ interrupt 如何暂停 Node 并通过 Command.resume 返回人工反馈
 Runtime 如何向 Node 注入 context 和 Store
 Checkpoint 与跨 thread 长期 Memory 如何分工
 长期信息如何被提取、读取、更新和显式遗忘
+普通目标与 Send 如何分别生成 PULL/PUSH Tasks
+子图如何建立独立 Checkpoint namespace 并跨层恢复
+Supervisor 如何通过统一 task Tool 委派多个子 Agent Tasks
 ```
 
 完成高级核心能力后，再使用 LangGraph 重构同一业务流程，对照理解框架为这些底层机制提供的抽象。

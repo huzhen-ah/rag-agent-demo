@@ -38,10 +38,17 @@ class PregelScratchpad:
         self._interrupt_index += 1
         return current_index
  
+@dataclass(slots=True)
+class Send:
+    node: str
+    arg: Any
+
+
 @dataclass(frozen=True)
 class Task:#任务类，其实就是一个身份，任务id：task_id， 任务用的node名字:node_name
     task_id: str
     node_name: str
+    input: Any
     
 @dataclass(frozen=True)
 class GraphCheckpointContext:#运行时上下文

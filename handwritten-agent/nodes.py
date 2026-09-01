@@ -11,16 +11,19 @@ import json
 from exceptions import ToolInvocationException,ToolExecutionException
 from hitl import interrupt
 from copy import deepcopy
+import inspect
+
+
 
 class ModelNode:
     def __init__(self,chat_model,tool_definitions):
         self.chat_model = chat_model
         self.tool_definitions = tool_definitions
     
-    def __call__(self,state:AgentState, node_runtime=None)->AgentStateUpdate:
+    def __call__(self,state:AgentState, node_runtime)->AgentStateUpdate:
         messages = deepcopy(state["messages"])
         
-        if node_runtime is not None and node_runtime.memory_store is not None:
+        if node_runtime.memory_store is not None:
             if node_runtime.context is None or "user_id" not in node_runtime.context:
                 raise ValueError("使用MemoryStore时，必须在context中提供user_id")
             user_id = node_runtime.context["user_id"]
@@ -50,8 +53,7 @@ class ToolNode:
     def __init__(self,register):
         self.register = register
         
-    def __call__(self,state:AgentState)->AgentStateUpdate:
-        ret = {"messages":[]}
+    def __call__(self, tool_call, node_runtime)->AgentStateUpdate:
         """
         id
         content
@@ -60,64 +62,32 @@ class ToolNode:
         name
         status
         """
-        #先找到最后一条assistant_message
-        assistant_message = None
-        index = -1
-        message_lens = len(state["messages"])
-        while abs(index) <= message_lens:
-            message = state["messages"][index]
-            if message["role"] == "assistant":
-                assistant_message = message
-                break
-            index = index - 1
-        if assistant_message is None:
-            raise ValueError("ToolNode找不到assistant message")
-        
-        passed_tool_call_ids = set()
-        for i in range(1,abs(index)):
-            message = state["messages"][-i]
-            if message["role"] == "tool":
-                passed_tool_call_ids.add(message["tool_call_id"])
-        
-        
-        
-        tool_calls = assistant_message["tool_calls"]
-        
-        tool_call_ids = set()
-        for tool_call in tool_calls:
-            tool_call_ids.add(tool_call["id"])
-        
-        unknown_tool_call_ids = passed_tool_call_ids - tool_call_ids
-        if unknown_tool_call_ids:
-            raise ValueError("assistant message后面不能出现不在assistant messages tool_calls里面的tool_call_ids:{}".format(unknown_tool_call_ids))
-        for tool_call in tool_calls:
-            try:
-                tool_call_id = tool_call["id"]
-                if tool_call_id in passed_tool_call_ids:
-                    continue
-                name = tool_call["name"]
-                args = tool_call["args"]
-                tool = self.register.get(name)
+        tool_call_id = tool_call["id"]
+        name = tool_call["name"]
+        args = tool_call["args"]
+        try:
+            tool = self.register.get(name)
+            if "node_runtime" in inspect.signature(tool.run).parameters:
+                content = tool.run(args, node_runtime=node_runtime)
+            else:
                 content = tool.run(args)
-                content = json.dumps(content,ensure_ascii=False)
-                status = "success"
-            except ToolInvocationException as error:
-                content = json.dumps("error:{}".format(error),ensure_ascii=False)
-                status = "error"
-            except ToolExecutionException as error:
-                content = json.dumps("error:{}".format(error),ensure_ascii=False)
-                status = "error"
-            
-            
-            message = {"id":r"msg_{}".format(uuid.uuid4().hex),
-                        "content":content,
-                        "role":"tool",
-                        "tool_call_id":tool_call_id,
-                        "name":name,
-                        "status":status
-                        }
-            ret["messages"].append(message)
-        return ret
+            content = json.dumps(content,ensure_ascii=False)
+            status = "success"
+        except ToolInvocationException as error:
+            content = json.dumps("error:{}".format(error), ensure_ascii=False)
+            status = "error"
+        except ToolExecutionException as error:
+            content = json.dumps("error:{}".format(error), ensure_ascii=False)
+            status = "error"
+        tool_message = {
+                            "id" : "msg_{}".format(uuid.uuid4().hex),
+                            "content" : content,
+                            "role" : "tool",
+                            "tool_call_id" : tool_call_id,
+                            "name" : name,
+                            "status" : status
+                       }
+        return {"messages" : [tool_message]}
     
 class ToolArgsCompletionNode:
     def __init__(self, register, tool_hitl_policy):

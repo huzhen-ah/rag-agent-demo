@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 import json
 import os
-from hitl import Interrupt
+from hitl import Interrupt, Send
 
 
 class StateSnapshot(NamedTuple):#一个checkpoint要保存的东西
@@ -22,7 +22,8 @@ class StateSnapshot(NamedTuple):#一个checkpoint要保存的东西
     parent_checkpoint_id: str | None
     super_step: int
     state: dict[str, Any]
-    next_node_names: tuple[str, ...]
+    pending_pull_node_names: list[str]
+    pending_sends: list[Send]
     created_at: str
 
 
@@ -129,11 +130,12 @@ class JsonlCheckpointer(Checkpointer):
 
     def _serialize(self,snapshot: StateSnapshot) -> str:
         snapshot_dict = snapshot._asdict()
+        snapshot_dict["pending_sends"] = [{"node":send.node, "arg":send.arg} for send in snapshot_dict["pending_sends"]]
         return json.dumps(snapshot_dict,ensure_ascii=False)
 
     def _deserialize(self,snapshot_json: str) -> StateSnapshot:
         snapshot_dict = json.loads(snapshot_json)
-        snapshot_dict["next_node_names"] = tuple(snapshot_dict["next_node_names"])
+        snapshot_dict["pending_sends"] = [Send(**send) for send in snapshot_dict["pending_sends"]]
         snapshot = StateSnapshot(**snapshot_dict)
         return snapshot
 

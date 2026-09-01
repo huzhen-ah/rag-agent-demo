@@ -7,6 +7,9 @@ Created on Tue Aug  4 15:21:24 2026
 """
 
 from state import AgentState
+from hitl import Send
+
+
 
 def router_after_model(state: AgentState)->str:
     """
@@ -20,4 +23,34 @@ def router_after_model(state: AgentState)->str:
     else:
         return "finished"
         
-    
+
+def router_after_tool_review(state):
+    messages = state["messages"]
+
+    assistant_message = None
+    assistant_message_index = None
+
+
+
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message["role"] == "assistant":
+            assistant_message = message
+            assistant_message_index = index
+            break
+
+    if assistant_message is None:
+        raise ValueError("router_after_tool_review找不到assistant_message")
+
+    completed_tool_call_ids = set()
+    for message in messages[assistant_message_index+1:]:
+        if message["role"] == "tool":
+            completed_tool_call_ids.add(message["tool_call_id"])
+
+    sends = []
+    for tool_call in assistant_message["tool_calls"]:
+        if tool_call["id"] not in completed_tool_call_ids:
+            sends.append(Send(node="tool_node",arg=tool_call))
+    if sends:
+        return sends
+    return "model_node"

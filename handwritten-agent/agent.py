@@ -10,7 +10,7 @@ import uuid
 from graph import StateGraph,START,END
 from state import AgentState
 from nodes import ModelNode, ToolNode, ToolArgsCompletionNode, ToolReviewNode, MemoryWriteNode
-from routers import router_after_model
+from routers import router_after_model, router_after_tool_review
 from hitl import Command
 import json
 
@@ -45,7 +45,7 @@ class Agent:
         state_graph.add_node("tool_args_completion_node", self.tool_args_completion_node)
         state_graph.add_node("tool_review_node", self.tool_review_node)
         state_graph.add_edge(START, "model_node")
-        state_graph.add_edge("tool_review_node", "tool_node")
+        state_graph.add_conditional_edges("tool_review_node", router_after_tool_review)
         state_graph.add_edge("tool_node", "model_node")
         if self.memory_write_node is not None:
             state_graph.add_node("memory_write_node", self.memory_write_node)
