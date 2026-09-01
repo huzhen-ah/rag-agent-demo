@@ -44,32 +44,30 @@ class Agent:
         state_graph.add_node("tool_node", self.tool_node)
         state_graph.add_node("tool_args_completion_node", self.tool_args_completion_node)
         state_graph.add_node("tool_review_node", self.tool_review_node)
-        state_graph.add_edge(START, "model_node")
-        state_graph.add_conditional_edges("tool_review_node", router_after_tool_review)
-        state_graph.add_edge("tool_node", "model_node")
+
         if self.memory_write_node is not None:
             state_graph.add_node("memory_write_node", self.memory_write_node)
             state_graph.add_edge("memory_write_node", END)
-        
-        if self.memory_write_node is not None:
             finished_target = "memory_write_node"
         else:
             finished_target = END
-            
+
+        state_graph.add_edge(START, "model_node")
         model_path_map = {
                         "need_tools":"tool_args_completion_node",
                         "finished":finished_target
                    }
         
         state_graph.add_conditional_edges("model_node", router_after_model,model_path_map)
-        
         tool_args_completion_path_map = {
                         "needs_more_args" : "tool_args_completion_node",
                         "tool_review_node" : "tool_review_node"
                    }
         
         state_graph.add_conditional_edges("tool_args_completion_node", self.tool_args_completion_node.router_after_toolArgsCompletionNode, tool_args_completion_path_map)
-        
+        state_graph.add_conditional_edges("tool_review_node", router_after_tool_review)
+        state_graph.add_edge("tool_node", "model_node")
+
         return state_graph.compile(self.checkpointer, self.memory_store)
     
     def create_initial_state(self):
