@@ -12,7 +12,10 @@ from collections.abc import Hashable
 from checkpoint import StateSnapshot, Checkpointer, PendingWrite
 import time
 import uuid
-from hitl import Task, Send, GraphCheckpointContext, TaskExecutionContext, TaskResult, PregelScratchpad, Command, _task_execution_context_var, create_interrupt_id
+from hitl import Command, create_interrupt_id
+from task_execution import Task, TaskResult, PregelScratchpad
+from send import Send
+from execution_context import task_execution_context_var, GraphCheckpointContext, TaskExecutionContext
 from exceptions import GraphInterrupt
 from memory import BaseStore
 import inspect
@@ -237,7 +240,7 @@ class CompiledStateGraph:
     def execute_task(self, task, graph_checkpoint_context, resume_values=(), node_runtime=None):
         scratchpad = PregelScratchpad(resume=list(resume_values))
         task_execution_context = TaskExecutionContext(graph_checkpoint_context, task, scratchpad)
-        token = _task_execution_context_var.set(task_execution_context)
+        token = task_execution_context_var.set(task_execution_context)
         try:
             node = self.nodes[task.node_name]
             if "node_runtime" in inspect.signature(node).parameters:
@@ -253,7 +256,7 @@ class CompiledStateGraph:
             task_result = TaskResult(task=task, channel="error", value=error)
             return task_result
         finally:
-            _task_execution_context_var.reset(token)
+            task_execution_context_var.reset(token)
       
     def is_interrupt_created_by_task(self, interrupt_id, checkpoint_id, task_id):
         tmp_interrupt_id = create_interrupt_id(checkpoint_id, task_id)

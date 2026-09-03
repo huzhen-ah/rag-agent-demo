@@ -6,8 +6,8 @@ Created on Fri Aug 28 11:32:58 2026
 @author: huzhen
 """
 from exceptions import ToolInvocationException, ToolExecutionException, GraphInterrupt
-from hitl import _task_execution_context_var, Command
-
+from hitl import Command
+from execution_context import task_execution_context_var
 
 
 class CompiledSubAgent:
@@ -62,7 +62,7 @@ class TaskTool:
         subagent_type = arguments["subagent_type"]
         subagent = self.get_subagent(subagent_type)
 
-        task_execution_context = _task_execution_context_var.get()
+        task_execution_context = task_execution_context_var.get()
 
         if task_execution_context is None:
             raise RuntimeError("task_execution_context必须是在CompiledStateGraph执行Task期间调用")

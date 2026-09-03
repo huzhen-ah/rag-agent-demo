@@ -12,7 +12,8 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 import json
 import os
-from hitl import Interrupt, Send
+from hitl import Interrupt
+from send import Send
 
 
 class StateSnapshot(NamedTuple):#一个checkpoint要保存的东西

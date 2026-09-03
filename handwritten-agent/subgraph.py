@@ -5,7 +5,10 @@ Created on Sun Aug 23 18:10:03 2026
 
 @author: huzhen
 """
-from hitl import _task_execution_context_var, Command
+from hitl import Command
+from execution_context import task_execution_context_var
+
+
 from exceptions import GraphInterrupt
 
 class SubGraphNode:
@@ -16,7 +19,7 @@ class SubGraphNode:
         
     def __call__(self, parent_state, node_runtime):
         
-        current_task_execution_context = _task_execution_context_var.get()
+        current_task_execution_context = task_execution_context_var.get()
         
         if current_task_execution_context is None:
             raise RuntimeError("SubGraphNode必须在CompiledStateGraph执行Task期间调用")
