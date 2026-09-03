@@ -82,10 +82,10 @@ class Agent:
                       }
         return agent_state
     
-    def invoke(self, user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, context=None):
+    def invoke(self, user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map=None, context=None):
         
         if isinstance(user_input, Command):
-            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
+            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit=self.max_steps, context=context)
         
         
         if user_input is not None:
@@ -98,7 +98,7 @@ class Agent:
         else:
             input_update = None
 
-        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
+        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit=self.max_steps, context=context)
 
 
         return agent_state

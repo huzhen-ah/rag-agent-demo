@@ -7,7 +7,7 @@ Created on Fri Aug 28 11:32:58 2026
 """
 from exceptions import ToolInvocationException, ToolExecutionException, GraphInterrupt
 from hitl import _task_execution_context_var, Command
-import uuid
+
 
 
 class CompiledSubAgent:
@@ -84,27 +84,22 @@ class TaskTool:
                                   }
 
         if node_runtime.resume_map:
-            graph_input = Command(resume=node_runtime.resume_map)
-            input_update = None
+            subagent_input = Command(resume=node_runtime.resume_map)
+            subagent_state = None
         else:
-            graph_input = subagent.runnable.create_initial_state()
-            user_message = {
-                                "id" : "msg_{}".format(uuid.uuid4().hex),
-                                "role" : "user",
-                                "content" : description
+            subagent_input = description
+            subagent_state = subagent.runnable.create_initial_state()
+            
+            
 
-                           }
-
-            input_update = {"messages":[user_message]}
-
-        output = subagent.runnable.compiled_graph._run(
-                            graph_input = graph_input,
-                            input_update = input_update,
+        output = subagent.runnable.invoke(
+                            user_input = subagent_input,
+                            agent_state = subagent_state,
                             thread_id = graph_checkpoint_context.thread_id,
                             checkpoint_ns = subagent_checkpoint_ns,
+                            checkpoint_id = None,
                             checkpoint_map = subagent_checkpoint_map,
                             context = node_runtime.context,#当前其实就是存储个user_id,用于memory。
-                            stream_writer = node_runtime.stream_writer
                         )
 
         if "__interrupt__" in output:
