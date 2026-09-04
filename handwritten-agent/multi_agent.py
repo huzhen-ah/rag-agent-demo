@@ -97,7 +97,7 @@ class TaskTool:
                             agent_state = subagent_state,
                             thread_id = graph_checkpoint_context.thread_id,
                             checkpoint_ns = subagent_checkpoint_ns,
-                            checkpoint_id = None,
+                            checkpoint_id = None,#None的目的是加载最新的checkpoint
                             checkpoint_map = subagent_checkpoint_map,
                             context = node_runtime.context,#当前其实就是存储个user_id,用于memory。
                         )

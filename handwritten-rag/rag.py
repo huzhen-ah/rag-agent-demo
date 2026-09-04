@@ -65,11 +65,18 @@ class RAG:
             ret.append(_)
         return ret
     
-    def answer_question(self,question,c,k):
+    def retrieve(self, question, c, k):
         dense_chunks_ret = self.denseRetrieval.search_documents(question,k*3)
         bm25_chunks_ret = self.bm25Retrieval.search_documents(question,k*3)
         rrf_chunks_ret = self.rrf(dense_chunks_ret, bm25_chunks_ret,c,k*2)
         reranker_chunks = self.reranker.rerank(question,rrf_chunks_ret,k)
+        
+        return reranker_chunks
+        
+        
+    def answer_question(self,question,c,k):
+        
+        reranker_chunks = self.retrieve(question, c, k)
         
         prompt = "请严格按照以下参考资料回答问题，如果资料不全，请回答'根据现有资料无法确定'\n" + "\n".join(["参考资料_{}:{}".format(i,content) for i,content in enumerate([chunk["chunk"].content for chunk in reranker_chunks])])
         messages = [
@@ -87,6 +94,8 @@ class RAG:
 
        
         return answer
+    
+    
         
         
     

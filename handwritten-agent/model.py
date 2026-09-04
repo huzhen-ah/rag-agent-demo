@@ -93,7 +93,7 @@ if __name__ == "__main__":
         },
         {
             "role": "user",
-            "content": "请读取简历，告诉我求职方向。",
+            "content": "请读取main的简历，告诉我求职方向。",
         },
     ]
 

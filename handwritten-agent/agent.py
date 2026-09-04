@@ -128,13 +128,14 @@ class Agent:
 if __name__ == "__main__":
     from model import LocalChatModel
     from tool_register import Register
-    from tools import read_resume_tool, search_project_evidence_tool, update_user_profile_tool
+    from tools import read_resume_tool, search_project_evidence_tool, update_user_profile_tool, query_rag_tool
     from checkpoint import JsonlCheckpointer
     from memory import JsonlStore
 
     register = Register()
     register.register(read_resume_tool)
     register.register(search_project_evidence_tool)
+    register.register(query_rag_tool)
 
     chat_model = LocalChatModel(
         model_path="models/Qwen3-4B",
@@ -145,6 +146,7 @@ if __name__ == "__main__":
         "你是一个求职助手。"
         "需要读取简历或查询项目证据时，"
         "必须调用相应工具。"
+        "需要查询知识库中的资料时，必须调用query_rag工具。"
         "只能依据工具返回的内容回答，"
         "不得编造经历。"
     )

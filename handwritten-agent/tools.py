@@ -9,7 +9,9 @@ from transformers.utils import get_json_schema
 import json
 from jsonschema import validate
 from jsonschema.exceptions import ValidationError
-from exceptions import ToolInvocationException,ResumeNotFoundException
+from exceptions import ToolInvocationException, ResumeNotFoundException, ToolExecutionException
+import requests
+
 
 class Tool:
     def __init__(self,function):
@@ -114,7 +116,27 @@ def update_user_profile(
     return ret
     
     
-        
+def query_rag(question: str) -> list[dict]:
+    """
+    从RAG知识库中检索与问题相关的参考资料。
+
+    Args:
+        question: 需要检索的问题。
+    """
+    try:
+        ret = requests.post("http://127.0.0.1:8080/retrieve",json={"question":question},timeout=120)
+        ret.raise_for_status()
+        ret = ret.json()
+    except requests.RequestException as error:
+            raise ToolExecutionException(
+                "调用RAG服务失败: {}".format(error)
+            ) from error
+
+    return ret["documents"]
+
+
+
+       
     
         
         
@@ -123,3 +145,4 @@ read_resume_tool = Tool(function=read_resume)
 search_project_evidence_tool = Tool(function=search_project_evidence)
 
 update_user_profile_tool = Tool(function=update_user_profile)
+query_rag_tool = Tool(function=query_rag)
