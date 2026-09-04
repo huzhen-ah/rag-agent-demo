@@ -36,7 +36,7 @@ class Agent:
         self.tool_node = ToolNode(self.register)
         self.tool_args_completion_node = ToolArgsCompletionNode(self.register, self.tool_hitl_policy)
         self.tool_review_node = ToolReviewNode(tool_hitl_policy)
-        self.compiled_graph = self.init_graph()
+        self.compiled_state_graph = self.init_graph()
         
     def init_graph(self):
         state_graph = StateGraph(AgentState)
@@ -85,7 +85,7 @@ class Agent:
     def invoke(self, user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map=None, context=None):
         
         if isinstance(user_input, Command):
-            return self.compiled_graph.invoke(user_input, None, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit=self.max_steps, context=context)
+            return self.compiled_state_graph.invoke(user_input, None, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit=self.max_steps, context=context)
         
         
         if user_input is not None:
@@ -98,14 +98,14 @@ class Agent:
         else:
             input_update = None
 
-        agent_state = self.compiled_graph.invoke(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit=self.max_steps, context=context)
+        agent_state = self.compiled_state_graph.invoke(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, checkpoint_map, recursion_limit=self.max_steps, context=context)
 
 
         return agent_state
 
     def stream(self, user_input, agent_state, thread_id, checkpoint_ns, checkpoint_id, context=None):
         if isinstance(user_input, Command):
-            event_item_generator = self.compiled_graph.stream(user_input, None, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
+            event_item_generator = self.compiled_state_graph.stream(user_input, None, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
             return event_item_generator
         
         if user_input is not None:
@@ -118,7 +118,7 @@ class Agent:
         else:
             input_update = None
 
-        event_item_generator = self.compiled_graph.stream(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
+        event_item_generator = self.compiled_state_graph.stream(agent_state, input_update, thread_id, checkpoint_ns, checkpoint_id, recursion_limit=self.max_steps, context=context)
 
 
         return event_item_generator
