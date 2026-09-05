@@ -10,7 +10,7 @@ Dense Retrieval ─┐
 BM25 Retrieval ──┘
 ```
 
-项目使用 NumPy 保存和计算 dense embedding，手写 BM25 与 RRF，并使用 Qwen3-Reranker 完成候选重排。当前版本的重点是理解各环节的输入、输出和作用，不包含向量数据库、LangChain 或服务化代码。
+项目使用 NumPy 保存和计算 dense embedding，手写 BM25 与 RRF，并使用 Qwen3-Reranker 完成候选重排。除本地完整问答外，当前版本还提供独立的 HTTP 检索服务，供手写 Agent 通过 Tool 调用。
 
 ## 署名与贡献说明
 
@@ -121,6 +121,7 @@ handwritten-rag/
 ├── reranker.py                      # Reranker
 ├── generator.py                     # 生成模型封装
 ├── rag.py                           # RRF 与完整 RAG 编排
+├── rag_service.py                   # FastAPI 检索服务，返回重排后的文档
 ├── documents/
 │   └── THREE_WEEK_PLAN.md           # 当前示例知识库文档
 ├── evaluate_retrieval_dense.py      # Dense 评估
@@ -145,12 +146,14 @@ sentence-transformers
 numpy
 jieba
 PyMuPDF
+fastapi
+uvicorn
 ```
 
 本项目使用已有 Conda 环境：
 
 ```bash
-conda activate ENV_hf
+conda activate ENV_rag
 ```
 
 ## 运行
@@ -179,6 +182,14 @@ python demo.py
 ```text
 exit
 ```
+
+### 启动 Agent 使用的检索服务
+
+```bash
+python rag_service.py
+```
+
+服务监听 `http://127.0.0.1:8080/retrieve`，只加载 Embedding 与 Reranker，并返回 Top-K 文档；最终答案由 Agent 的模型生成。
 
 当前端到端检索参数：
 

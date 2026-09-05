@@ -12,7 +12,7 @@ Model 决策
 → 下一轮执行或结束
 ```
 
-当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming + Subgraph + Multi-Agent 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，在每个成功提交的 Super-step 后保存可恢复的运行快照，在 Node 内通过 `interrupt()` 暂停并恢复原 Task，使用独立 Store 跨 thread 保存、读取、更新和遗忘用户长期信息，以事件流暴露 Graph 执行过程，并支持带独立 Checkpoint namespace 的嵌套图与 `agent_as_tool` 多 Agent 协作。模型 token 级输出作为可选的展示层增强，不纳入当前手撕 Runtime 核心范围。
+当前版本已经完成 **Checkpoint + HITL + Long-term Memory + Graph Event Streaming + Subgraph + Multi-Agent + RAG Tool + Skills 核心闭环**。它能够运行完整的 Model → Tool → Model 循环，支持可恢复执行、跨会话记忆、事件流、嵌套图、`agent_as_tool` 多 Agent 协作，并可调用独立 RAG 检索服务。Skills 采用渐进式加载：模型先看到元数据，匹配后再通过 `read_file` 读取完整 `SKILL.md`。
 
 ## 1. 当前实现范围
 
@@ -59,11 +59,15 @@ Model 决策
 - Multi-Agent 采用 `agent_as_tool`：`TaskTool` 根据 `subagent_type` 选择 `CompiledSubAgent`，调用子 Agent，并把最终 Assistant 内容返回为父 Agent 的 Tool 结果。
 - 子 Agent 的 Interrupt 可以穿过 Tool 层冒泡到调用者，`Command.resume` 再按 Task 和 namespace 路由回真正产生 Interrupt 的子图。
 - 已验证同一轮生成多个 `task` ToolCalls、多个子 Agent Task 分别中断与恢复、结果汇合后由 Supervisor 统一总结。
+- `query_rag` 通过 HTTP 调用手写 RAG 的 `/retrieve` 接口，将检索结果作为 ToolMessage 返回模型。
+- Skills 加载 `name + description + path` 元数据并注入 System Prompt，模型按需调用 `read_file` 获取完整工作流说明。
 
-当前 Resume Agent 注册了两个 Tool：
+当前求职 Agent 注册了四个 Tool：
 
 - `read_resume`：按照 `resume_id` 读取本地简历。
 - `search_project_evidence`：按照岗位要求检索项目证据。
+- `query_rag`：调用独立 RAG 服务查询知识库。
+- `read_file`：按路径读取匹配 Skill 的完整说明。
 
 ## 2. 核心运行流程
 
@@ -134,6 +138,8 @@ State → Partial State Update
 | `subgraph.py` | SubGraphNode、嵌套 Checkpoint namespace、父子 State 映射与跨层 Interrupt |
 | `multi_agent.py` | CompiledSubAgent 元数据、统一 TaskTool、子 Agent 调用与结果转换 |
 | `multi_agent_demo.py` | Supervisor + Resume Agent 的 `agent_as_tool` 组装与多 Task/HITL 演示 |
+| `skill.py` | 加载 Skill 元数据并构造渐进式 Skills 提示词 |
+| `skills/` | 保存各个 Skill 的 `SKILL.md` 与相关资源 |
 | `model.py` | Qwen3 Model Adapter、消息格式转换和 ToolCall ID 标准化 |
 | `parser.py` | 解析模型原始输出，提取 `content`、`name` 和 `arguments` |
 | `nodes.py` | ModelNode、ToolArgsCompletionNode、ToolReviewNode、ToolNode 和 MemoryWriteNode |
@@ -459,6 +465,15 @@ conda activate ENV_agent
 models/Qwen3-4B
 ```
 
+当前本地模型使用贪心生成，以提高 ToolCall 名称和参数的稳定性。
+
+如需使用 `query_rag`，先在 `handwritten-rag` 目录启动检索服务：
+
+```bash
+conda activate ENV_rag
+python rag_service.py
+```
+
 运行：
 
 ```bash
@@ -488,7 +503,7 @@ exit
 - 数据库、远程 Checkpointer、并发写入和分布式一致性。
 - Pending writes 的异步持久化。
 - 分布式执行与并发 Tool 调度。
-- 服务化、鉴权、配额和 Tool 沙箱。
+- 完整 Agent 服务化、鉴权、配额和 Tool 沙箱。
 - 完整的自动化测试、评测和可观测性体系。
 - 向量化 Memory 检索、TTL、自动压缩、异步写入和数据库 Store。
 - 模型 token 级输出以及 SSE/WebSocket 前端传输。
@@ -527,6 +542,8 @@ Checkpoint 与跨 thread 长期 Memory 如何分工
 普通目标与 Send 如何分别生成 PULL/PUSH Tasks
 子图如何建立独立 Checkpoint namespace 并跨层恢复
 Supervisor 如何通过统一 task Tool 委派多个子 Agent Tasks
+Agent 如何通过 HTTP Tool 调用独立 RAG 检索服务
+模型如何发现 Skill 元数据并按需读取完整 SKILL.md
 ```
 
 完成高级核心能力后，再使用 LangGraph 重构同一业务流程，对照理解框架为这些底层机制提供的抽象。
