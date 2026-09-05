@@ -13,14 +13,17 @@ from nodes import ModelNode, ToolNode, ToolArgsCompletionNode, ToolReviewNode, M
 from routers import router_after_model, router_after_tool_review
 from hitl import Command
 import json
-
+from skill import build_skills_prompt
 
 
 class Agent:
-    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, max_steps=10, memory_store=None, memory_tool=None):
+    def __init__(self, chat_model, register, system_prompt, checkpointer, tool_hitl_policy, skills=None, max_steps=10, memory_store=None, memory_tool=None):
         self.chat_model = chat_model
         self.register = register
         self.system_prompt = system_prompt
+        if skills:
+            skills_prompt = build_skills_prompt(skills)
+            self.system_prompt += "\n\n" + skills_prompt
         self.checkpointer = checkpointer
         self.tool_hitl_policy = tool_hitl_policy
         self.max_steps = max_steps
@@ -128,15 +131,19 @@ class Agent:
 if __name__ == "__main__":
     from model import LocalChatModel
     from tool_register import Register
-    from tools import read_resume_tool, search_project_evidence_tool, update_user_profile_tool, query_rag_tool
+    from tools import read_resume_tool, search_project_evidence_tool, update_user_profile_tool, query_rag_tool, read_file_tool
     from checkpoint import JsonlCheckpointer
     from memory import JsonlStore
-
+    from skill import load_skill_metadata
+    
+    
+    
     register = Register()
     register.register(read_resume_tool)
     register.register(search_project_evidence_tool)
     register.register(query_rag_tool)
-
+    register.register(read_file_tool)
+    
     chat_model = LocalChatModel(
         model_path="models/Qwen3-4B",
         device="mps",
@@ -155,6 +162,9 @@ if __name__ == "__main__":
         "read_resume": ("args_completion","review"),
         "search_project_evidence": ("review",)
     }
+    
+    skills = load_skill_metadata(r"skills")
+    
     checkpointer = JsonlCheckpointer()
 
     memory_store = JsonlStore()
@@ -164,11 +174,12 @@ if __name__ == "__main__":
         system_prompt= system_prompt,
         checkpointer= checkpointer,
         tool_hitl_policy= tool_hitl_policy,
+        skills= skills,
         max_steps= 10,
         memory_store= memory_store,
         memory_tool= update_user_profile_tool
     )
-    
+    print("prompt: ",agent.system_prompt)
     """
         user_id：用户，谁
         thread_id：具体会话，哪次会话

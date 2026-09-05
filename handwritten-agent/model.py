@@ -33,10 +33,7 @@ class LocalChatModel:
         outputs = self.model.generate(
                         **model_inputs,
                         max_new_tokens=max_new_tokens,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.8,
-                        top_k=20
+                        do_sample=False
         )
 
         input_length = model_inputs["input_ids"].shape[1]

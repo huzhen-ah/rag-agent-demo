@@ -135,7 +135,15 @@ def query_rag(question: str) -> list[dict]:
     return ret["documents"]
 
 
-
+def read_file(file_path: str) -> str:
+    """
+    读取系统提示中列出的Skill文件。当用户请求与某个Skill说明匹配时，必须先调用本工具读取对应SKILL.md，再执行其他业务工具。
+    
+    Args:
+        file_path: 需要读取的文件路径
+    """
+    with open(file_path,"r",encoding="utf8") as f:
+        return f.read()
        
     
         
@@ -146,3 +154,4 @@ search_project_evidence_tool = Tool(function=search_project_evidence)
 
 update_user_profile_tool = Tool(function=update_user_profile)
 query_rag_tool = Tool(function=query_rag)
+read_file_tool = Tool(function=read_file)
