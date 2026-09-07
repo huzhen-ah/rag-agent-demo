@@ -28,3 +28,4 @@ models/
 # Local agent checkpoints
 handwritten-agent/checkpoints/
 handwritten-agent/test.jsonl
+langgraph-agent/checkpoints.sqlite*
