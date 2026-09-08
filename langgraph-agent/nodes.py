@@ -8,14 +8,25 @@ Created on Mon Sep  7 10:00:38 2026
 
 from langgraph.types import interrupt
 from copy import deepcopy
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, SystemMessage, HumanMessage
+import json
 
 class ModelNode:
     def __init__(self, model):
         self.model = model
         
-    def __call__(self, state):
-        ai_message = self.model.invoke(state["messages"])
+    def __call__(self, state, runtime):
+        messages = deepcopy(state["messages"])
+        user_id = runtime.context["user_id"]
+        namespace = (user_id, "memories")
+        profile_item = runtime.store.get(namespace, "profile")
+        if profile_item is not None:
+            profile = profile_item.value
+            profile_content = json.dumps(profile, ensure_ascii=False)
+            messages[0].content += (
+                "\n\n用户长期记忆：\n{}".format(profile_content)
+            )
+        ai_message = self.model.invoke(messages)
         update_state = {
                 "messages" : [ai_message],
                 "model_call_count" : 1
@@ -138,4 +149,77 @@ class ToolReviewNode:
         updated_messages = [updated_ai_message]
         updated_messages.extend(rejected_tool_messages)
         return {"messages":updated_messages}
+   
+class MemoryWriteNode:
+    def __init__(self, model, memory_tool):
+        self.memory_tool = memory_tool
+        self.model = model.bind_tools([memory_tool])
+        self.system_message = SystemMessage(
+                       content=(
+                            "你是长期记忆提取器。"
+                            "只分析latest_user_message中用户明确表达的长期求职信息。"
+                            "existing_profile只用于理解用户对已有信息的修改。"
+                            "临时查询、一次性要求、疑问和模型推测不能保存。"
+                            "存在需要新增、修改或明确删除的长期信息时，"
+                            "调用update_user_profile工具。"
+                            "没有需要更新的信息时，不调用任何工具。"
+                       )
+        )
         
+    def __call__(self, state, runtime):
+        latest_user_message = None
+        for message in reversed(state["messages"]):
+            if isinstance(message, HumanMessage):
+                latest_user_message = message
+                break
+            
+        if latest_user_message is None:
+            return {}
+        
+        user_id = runtime.context["user_id"]
+        namespace = (user_id, "memories")
+        key = "profile"
+        profile_item = runtime.store.get(namespace, key)
+        if profile_item is None:
+            existing_profile = {}
+        else:
+            existing_profile = profile_item.value
+        
+        user_message = HumanMessage(
+                        content = json.dumps(
+                            {
+                                "existing_profile" : existing_profile,
+                                "latest_user_message" : latest_user_message.content
+                            },
+                            ensure_ascii=False
+                        )
+        )
+        memory_extraction_messages = [self.system_message, user_message]
+        
+        response = self.model.invoke(memory_extraction_messages)
+        
+        tool_calls = response.tool_calls
+        if not tool_calls:
+            return {"model_call_count":1}
+        
+        if len(tool_calls) != 1:
+            raise ValueError("长期记忆提取模型最多只能返回一个ToolCall")
+        
+        tool_call = tool_calls[0]
+        if tool_call["name"] != self.memory_tool.name:
+            raise ValueError("长期记忆提取模型只能调用:{}".format(self.memory_tool.name))
+        profile_changes = self.memory_tool.invoke(tool_call["args"])
+        profile_updates = profile_changes["updates"]
+        fields_to_delete = profile_changes["fields_to_delete"]
+        if not profile_updates and not fields_to_delete:
+            return {"model_call_count":1}
+        merged_profile = {**existing_profile, **profile_updates}
+        if fields_to_delete:
+            merged_profile = {k:v for k,v in merged_profile.items() if k not in fields_to_delete}
+        
+        if merged_profile:
+            runtime.store.put(namespace, key, merged_profile)
+        else:
+            runtime.store.delete(namespace, key)
+        
+        return {"model_call_count" : 1}
