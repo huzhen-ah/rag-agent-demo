@@ -22,6 +22,75 @@ class ModelNode:
               }
         return update_state
     
+class ToolArgsCompletionNode:
+    def __init__(self, tools, tool_hitl_policy):
+        self.name2tool = {}
+        for tool in tools:
+            self.name2tool[tool.name] = tool
+        
+        self.tool_hitl_policy = tool_hitl_policy
+        
+    def get_missing_required_args(self, tool_call):
+        tool_name = tool_call["name"]
+        tool = self.name2tool[tool_name]
+        tool_schema = tool.args_schema.model_json_schema()
+        required_args = tool_schema.get("required",[])
+        provided_args = tool_call["args"]
+        missing_required_args = []
+        for arg in required_args:
+            if arg not in provided_args:
+                missing_required_args.append(arg)
+        return missing_required_args
+    
+    def router_after_args_completion(self, state):
+        for tool_call in state["messages"][-1].tool_calls:
+            behaviors = self.tool_hitl_policy.get(tool_call["name"], ())
+            if "args_completion" not in behaviors:
+                continue
+            missing_required_args = self.get_missing_required_args(tool_call)
+            if missing_required_args:
+                return "tool_args_completion"
+        return "tool_review"
+        
+            
+    def __call__(self, state):
+        ai_message = state["messages"][-1]
+        missing_args_requests = []
+        for tool_call in ai_message.tool_calls:
+            tool_name = tool_call["name"]
+            behaviors = self.tool_hitl_policy.get(tool_name, ())
+            if "args_completion" not in behaviors:
+                continue
+            missing_required_args = self.get_missing_required_args(tool_call)
+            if not missing_required_args:
+                continue
+            missing_args_request = {
+                                        "tool_call_id" : tool_call["id"],
+                                        "tool_name" : tool_call["name"],
+                                        "current_args" : tool_call["args"],
+                                        "missing_args" : missing_required_args
+                                   }
+            missing_args_requests.append(missing_args_request)
+        
+        if not missing_args_requests:
+            return {}
+        args_completion_response = interrupt(
+                    {
+                        "type": "args_completion",
+                        "requests": missing_args_requests
+                    }
+        )
+        
+        updated_ai_message = deepcopy(ai_message)
+        
+        for tool_call in updated_ai_message.tool_calls:
+            tool_call_id = tool_call["id"]
+            if tool_call_id not in args_completion_response:
+                continue
+            tool_call["args"].update(args_completion_response[tool_call_id])
+        return {"messages" : [updated_ai_message]}
+    
+    
 class ToolReviewNode:
     def __init__(self, tool_hitl_policy):
         self.tool_hitl_policy = tool_hitl_policy
