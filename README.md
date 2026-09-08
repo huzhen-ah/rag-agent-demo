@@ -1,12 +1,13 @@
 # RAG & Agent Demo
 
-这是一个用于学习和作品集展示的 RAG 与 Agent 项目。目前包含两套可以对照阅读的 RAG 实现，以及一套原生 Python 手写的 Graph Agent Runtime：
+这是一个用于学习和作品集展示的 RAG 与 Agent 项目。目前包含两套可以对照阅读的 RAG 实现、一套原生 Python 手写的 Graph Agent Runtime，以及对应的 LangGraph 重构版本：
 
 - `handwritten-rag`：不使用 RAG 编排框架，手写 BM25、RRF 和评测流程。
 - `langchain-rag`：使用 LangChain 与 Milvus Standalone 重构同一条 RAG 链路。
 - `handwritten-agent`：不使用 LangGraph，手写 State、Reducer、Node、Edge、Router、Compiled Graph 和 Tool-Calling 循环。
+- `langgraph-agent`：使用 LangGraph 重构手写 Agent 的同一套核心业务流程。
 
-手写 Agent 的基础运行闭环和 Checkpoint 核心闭环已经完成。后续将在同一 Runtime 上补充 HITL、Memory、Streaming、Subgraph 和 Multi-Agent，再使用 LangGraph 重构相同业务流程。
+手写 Agent 已完成 Checkpoint、HITL、Memory、Streaming、Subgraph、Multi-Agent、RAG Tool 和 Skills。LangGraph 版正在按相同语义逐步迁移。
 
 ## 署名
 
@@ -44,6 +45,13 @@ rag-agent-demo/
 │   ├── nodes.py
 │   ├── model.py
 │   ├── parser.py
+│   ├── tools.py
+│   └── agent.py
+├── langgraph-agent/
+│   ├── state.py
+│   ├── nodes.py
+│   ├── routers.py
+│   ├── model.py
 │   ├── tools.py
 │   └── agent.py
 └── README.md
@@ -143,6 +151,17 @@ User Input
 
 详细说明见 [handwritten-agent/README.md](handwritten-agent/README.md)。
 
+## LangGraph Agent
+
+LangGraph 版目前已经完成：
+
+- `MessagesState` 与自定义 `model_call_count` Reducer。
+- `StateGraph`、官方 `ToolNode` 和条件路由。
+- SQLite Checkpointer 与基于 `thread_id` 的状态恢复。
+- 基于 `interrupt()` 和 `Command(resume=...)` 的工具 HITL。
+- 按 Policy 执行参数补充，以及工具调用的 approve、edit、reject。
+- 使用 `Send` 将每个待执行 ToolCall 调度为独立任务。
+
 ## 两个版本的对应关系
 
 | 环节 | 手写版 | LangChain + Milvus 版 |
@@ -181,8 +200,7 @@ Qwen3-1.7B
 ## 后续计划
 
 ```text
-补齐手写Agent高级核心能力
-→ LangGraph重构
+完成LangGraph版本迁移
 → FastAPI与演示页面
 → 测试、评测和项目说明完善
 ```
