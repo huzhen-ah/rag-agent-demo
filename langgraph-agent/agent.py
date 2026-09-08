@@ -109,16 +109,18 @@ if __name__ == "__main__":
         ],
         "model_call_count": 0,
     }
-
-    compiled_state_graph.invoke(
+    config_A={
+        "configurable": {
+            "thread_id": "memory_test_thread_A_gast"
+        }
+    }
+    for update_event in compiled_state_graph.stream(
         input=thread_A_state,
-        config={
-            "configurable": {
-                "thread_id": "memory_test_thread_A_gast"
-            }
-        },
+        config=config_A,
         context=context,
-    )
+        stream_mode="updates"
+    ):
+        print("stream_event: ", update_event)
 
     profile_item = memory_store.get(
         ("user_A", "memories"),
