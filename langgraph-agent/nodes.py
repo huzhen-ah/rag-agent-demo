@@ -12,20 +12,23 @@ from langchain_core.messages import ToolMessage, SystemMessage, HumanMessage
 import json
 
 class ModelNode:
-    def __init__(self, model):
+    def __init__(self, model, system_prompt):
         self.model = model
+        self.system_prompt = system_prompt
         
     def __call__(self, state, runtime):
         messages = deepcopy(state["messages"])
         user_id = runtime.context["user_id"]
         namespace = (user_id, "memories")
         profile_item = runtime.store.get(namespace, "profile")
+        system_prompt = self.system_prompt
         if profile_item is not None:
             profile = profile_item.value
             profile_content = json.dumps(profile, ensure_ascii=False)
-            messages[0].content += (
+            system_prompt += (
                 "\n\n用户长期记忆：\n{}".format(profile_content)
             )
+        messages = [SystemMessage(content=system_prompt)] + messages
         ai_message = self.model.invoke(messages)
         update_state = {
                 "messages" : [ai_message],
