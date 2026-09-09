@@ -29,7 +29,7 @@ def router_after_tool_review(state):
         if tool_call["id"] not in tool_message_ids:
             pending_tool_calls.append(tool_call)
     if len(pending_tool_calls) == 0:
-        return "model"
+        return "finished"
     
     sends = []
     for tool_call in pending_tool_calls:
