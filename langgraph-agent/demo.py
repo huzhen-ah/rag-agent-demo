@@ -17,7 +17,8 @@ from langgraph.store.sqlite import SqliteStore
 from model import LocalQwenChatModel
 from agent import create_resume_agent, create_rag_agent
 from multi_agent import create_supervisor_agent
-
+from skill import load_skill_metadata
+import uuid
 
 model = LocalQwenChatModel(
     model_path="models/Qwen3-4B",
@@ -56,9 +57,12 @@ subagents = [
     }
 ]
 
+skills = load_skill_metadata(r"skills")
+
 supervisor_agent = create_supervisor_agent(
     model=model,
     subagents=subagents,
+    skills=skills,
     checkpointer=checkpointer,
     store=memory_store,
 )
@@ -66,7 +70,7 @@ supervisor_agent = create_supervisor_agent(
 if __name__ == "__main__":
     config = {
         "configurable": {
-            "thread_id": "multi_agent_test_231e3erwer123",
+            "thread_id": "skill_test_{}".format(uuid.uuid4().hex),
         }
     }
     context = {
@@ -76,7 +80,7 @@ if __name__ == "__main__":
     initial_state = {
         "messages": [
             HumanMessage(
-                content="请让简历专家读取main简历，并告诉我求职方向。从RAG资料库中检索相关学习计划，告诉我第二周应该做什么。"
+                content="请读取main简历，分析我与Agent工程师岗位的匹配程度，并给出已有优势、能力缺口和改进建议。"
             )
         ],
         "model_call_count": 0,

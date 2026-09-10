@@ -11,7 +11,7 @@ from nodes import ModelNode
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph import StateGraph, START, END
 from state import AgentState
-
+from skill import create_read_skill_tool, build_skills_prompt
 
 def create_task_tool(subagents):
     agents_by_name = {}
@@ -24,7 +24,12 @@ def create_task_tool(subagents):
         line = "- {}: {}".format(name,subagent["description"])
         agent_description_lines.append(line)
     
-    task_tool_description = "把完整、可独立执行的复杂任务委派给专业子Agent。\n可用子Agent：\n{}".format("\n".join(agent_description_lines))
+    task_tool_description = (
+                    "把完整、可独立执行的复杂任务委派给专业子Agent。"
+                    "description必须包含子Agent完成任务所需的全部已知信息，"
+                    "包括用户已经提供的ID、目标、问题和输出要求，不得省略。"
+                    "\n可用子Agent：\n{}".format("\n".join(agent_description_lines))
+    )
     
     @tool("task",description=task_tool_description)
     def task(description: str, subagent_type: str):
@@ -47,21 +52,24 @@ def create_task_tool(subagents):
     return task
         
     
-def create_supervisor_agent(model, subagents, checkpointer=None, store=None):
+def create_supervisor_agent(model, subagents, skills, checkpointer=None, store=None):
     task_tool = create_task_tool(subagents)
-
-    supervisor_model = model.bind_tools([task_tool])
-
+    read_skill_tool = create_read_skill_tool(skills)
+    
+    tools = [task_tool, read_skill_tool]
+    supervisor_model = model.bind_tools(tools)
+    skills_prompt = build_skills_prompt(skills)
     model_node = ModelNode(
         supervisor_model,
         system_prompt=(
             "你是求职助手Supervisor。"
             "遇到需要专业处理的任务时，必须通过task工具委派给合适的子Agent。"
             "子Agent返回结果后，由你整理成最终回答。"
+            "\n\n{}".format(skills_prompt)
         ),
     )
 
-    tool_node = ToolNode([task_tool])
+    tool_node = ToolNode(tools)
 
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("model", model_node)
