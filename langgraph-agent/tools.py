@@ -8,6 +8,9 @@ Created on Mon Sep  7 09:07:56 2026
 
 from langchain_core.tools import tool
 import json
+import requests
+
+
 
 @tool(parse_docstring=True)
 def read_resume(resume_id: str) -> str:
@@ -93,7 +96,22 @@ def update_user_profile(
         
     ret = {"updates":profile_updates,"fields_to_delete":fields_to_delete}
     return ret
-  
+
+@tool(parse_docstring=True)
+def query_rag(question: str) -> list[dict]:
+    """
+    从RAG知识库中检索与问题相关的参考资料。
+
+    Args:
+        question: 需要检索的问题。
+    """
+
+    ret = requests.post("http://127.0.0.1:8080/retrieve",json={"question":question},timeout=120)
+    ret.raise_for_status()
+    ret = ret.json()
+
+    return ret["documents"]
+
 if __name__ == "__main__":
     resume_content = read_resume.invoke({"resume_id":"main"})
     # print(resume_content)

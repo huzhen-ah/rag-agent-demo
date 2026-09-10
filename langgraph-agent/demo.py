@@ -15,7 +15,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.store.sqlite import SqliteStore
 
 from model import LocalQwenChatModel
-from agent import create_resume_agent
+from agent import create_resume_agent, create_rag_agent
 from multi_agent import create_supervisor_agent
 
 
@@ -41,12 +41,18 @@ memory_store.setup()
 
 
 resume_agent = create_resume_agent(model)
+rag_agent = create_rag_agent(model)
 
 subagents = [
     {
         "name": "resume_agent",
         "description": "负责读取、审核和分析用户简历",
         "runnable": resume_agent,
+    },
+    {
+        "name": "rag_agent",
+        "description": "负责从RAG资料库中检索相关信息",
+        "runnable": rag_agent
     }
 ]
 
@@ -60,7 +66,7 @@ supervisor_agent = create_supervisor_agent(
 if __name__ == "__main__":
     config = {
         "configurable": {
-            "thread_id": "multi_agent_test_231123",
+            "thread_id": "multi_agent_test_231e3erwer123",
         }
     }
     context = {
@@ -70,7 +76,7 @@ if __name__ == "__main__":
     initial_state = {
         "messages": [
             HumanMessage(
-                content="请让简历专家读取main简历，并告诉我求职方向。"
+                content="请让简历专家读取main简历，并告诉我求职方向。从RAG资料库中检索相关学习计划，告诉我第二周应该做什么。"
             )
         ],
         "model_call_count": 0,
@@ -104,5 +110,5 @@ if __name__ == "__main__":
             config=config,
             context=context,
         )
-
+    print("response: ",response)
     print("final_response:", response["messages"][-1].content)
